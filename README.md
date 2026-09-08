@@ -9,7 +9,7 @@ Full design: **[TECHNICAL_PLAN.md](TECHNICAL_PLAN.md)** — read §3 (constraint
 | Host | `retention.digifyce.com` (Hostinger shared, hPanel) |
 | Stack | PHP 8 + MySQL, no build step, no Node |
 | Deploy | Hostinger Git → `~/domains/retention.digifyce.com/` |
-| Status | **M1 in progress** — schema and migration runner done |
+| Status | **M1 in progress** — schema and migration runner done, verified against MariaDB 10.11 |
 
 ---
 
@@ -89,6 +89,68 @@ bin/                  migrate.php  keygen.php
 storage/              NOT in git — spool, processed, locks, logs
 secrets/              NOT in git — master.key, salts, GeoLite2-City.mmdb
 .env                  NOT in git — database credentials
+```
+
+---
+
+## Local development
+
+No Docker, no admin rights, no installers — both dependencies run from zip
+extractions in a user directory.
+
+### PHP 8.3
+
+Download the **NTS x64** build from <https://windows.php.net/downloads/releases/>,
+extract it, then create `php.ini` next to `php.exe` with:
+
+```ini
+extension_dir = "<php-dir>\ext"
+extension=openssl      ; token encryption (bin/keygen.php)
+extension=pdo_mysql    ; all database access
+extension=mbstring
+extension=curl         ; Shopify Admin API client
+extension=fileinfo
+memory_limit = 512M
+date.timezone = UTC
+```
+
+`openssl` and `pdo_mysql` are not optional — `keygen.php` and every database
+call fail without them.
+
+### MariaDB 10.11
+
+Use the **zip** distribution, not the MSI: it needs no service and no
+elevation. 10.11 LTS is chosen to approximate Hostinger's shared MariaDB —
+confirm the production version with `SELECT VERSION()` and re-test here if it
+differs materially.
+
+```bash
+bin/mariadb-install-db.exe --datadir=<data-dir> --port=3307
+bin/mariadbd.exe --datadir=<data-dir> --port=3307        # leave running
+```
+
+Port 3307 avoids colliding with any existing MySQL.
+
+Then create the three databases and one user granted on all of them (mirroring
+the hPanel setup above), point `.env` at `127.0.0.1:3307`, and run
+`php bin/migrate.php`.
+
+### Verifying a schema change
+
+```bash
+php -l <file>                    # syntax
+php bin/migrate.php --dry-run    # statement count, nothing written
+php bin/migrate.php              # apply
+php bin/migrate.php              # re-run: everything should report [skip]
+```
+
+Confirm the events table kept its compression, because the ~14-month shard
+lifetime depends on it:
+
+```sql
+SELECT ROW_FORMAT, CREATE_OPTIONS FROM information_schema.TABLES
+WHERE TABLE_SCHEMA='<prefix>odys_ev_2026' AND TABLE_NAME='events';
+-- expect: Compressed | row_format=COMPRESSED key_block_size=8
 ```
 
 ---
