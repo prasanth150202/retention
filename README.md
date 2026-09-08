@@ -19,17 +19,21 @@ You only need to edit **one file**: `.env`. Everything else is in version contro
 
 ### 1. Create the databases
 
-In hPanel → Databases, create three. Hostinger prepends your account id to whatever you type and shows the full result:
+You need **two** databases to start, and one more each January.
 
-| You type | Full name becomes |
-|---|---|
-| `odys_core` | `u123456789_odys_core` |
-| `odys_ev_2026` | `u123456789_odys_ev_2026` |
-| `odys_ev_2027` | `u123456789_odys_ev_2027` |
+| Database | Holds | Rotates? |
+|---|---|---|
+| `<prefix>_retention` | Core — stores, orders, customers, all reports and settings | Never |
+| `<prefix>_ev_2026` | Raw pixel events for 2026 only | Yearly |
+| `<prefix>_ev_2027` | Raw pixel events for 2027 | Create by Dec 2027 |
 
-Create **one** MySQL user and grant it access to **all three**. This matters: the application runs queries that span databases, and they fail at runtime if the user can only reach some of them.
+hPanel prepends your account id to whatever name you type and shows the full result — match it to what you put in `.env`.
 
-Why three? Raw pixel events get a **new database each year**, because Hostinger caps each database at 3 GB and one year of events at projected volume is roughly 2.5 GB. `odys_core` holds everything else permanently.
+**Why events live apart from everything else.** Events are ~99% of the data. Hostinger caps each database at 3 GB; at projected volume that is roughly 14 months of events for five stores. If events shared the core database, filling it would stop order syncing, the dashboard and settings too. Kept separate, a full shard stops only ingest — orders keep syncing and the dashboard keeps working while you get an alert with weeks of runway.
+
+**Credentials.** Hostinger issues one credential per database, so each database has its own user and password. That is fine here: no query ever spans two databases. Event rows store only integer ids, and the names those ids refer to live in the core database, so each is read on its own connection. If your host *does* allow one user across several databases, that works too — just omit the per-shard blocks in `.env`.
+
+**Remote MySQL.** Only needed if you run migrations from your own machine. Once the code is deployed, everything connects to `localhost` and remote access can be turned off — which is worth doing, since Hostinger's remote grants default to `@%` (reachable from any host on the internet).
 
 ### 2. Configure
 
@@ -37,16 +41,23 @@ Why three? Raw pixel events get a **new database each year**, because Hostinger 
 cp .env.example .env
 ```
 
-Fill in six values: `DB_USER`, `DB_PASS`, `DB_CORE`, `DB_SHARD`, and `ALERT_EMAIL_TO`.
-
-`DB_CORE` and `DB_SHARD` are the **full** database names as hPanel displays them. Keep the literal `{year}` in `DB_SHARD` — the application substitutes it to work out which database a given date lives in:
+`DB_CORE` and `DB_SHARD` are the **full** database names as hPanel displays them. Keep the literal `{year}` in `DB_SHARD` — the application substitutes it to work out which database a given date belongs in. Add a credential block per shard year:
 
 ```
-DB_CORE=u123456789_odys_core
-DB_SHARD=u123456789_odys_ev_{year}
+DB_USER=u123456789_retention          # core database
+DB_PASS=…
+DB_CORE=u123456789_retention
+DB_SHARD=u123456789_ev_{year}
+
+DB_SHARD_2026_USER=u123456789_ev_2026 # this shard's own credential
+DB_SHARD_2026_PASS=…
 ```
+
+A year with no `DB_SHARD_<YEAR>_*` block falls back to `DB_USER` / `DB_PASS`.
 
 Leave the Shopify values blank for now — they are only needed to onboard a store.
+
+Running `migrate.php` against more than one environment? Use `--env=.env.production` rather than swapping files around.
 
 `.env` lives at the repo root, which is **above** `public_html` and therefore not web-reachable. Do not move it.
 
