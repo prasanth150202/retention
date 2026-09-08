@@ -19,17 +19,17 @@ You only need to edit **one file**: `.env`. Everything else is in version contro
 
 ### 1. Create the databases
 
-In hPanel → Databases, create three:
+In hPanel → Databases, create three. Hostinger prepends your account id to whatever you type and shows the full result:
 
-```
-<prefix>odys_core
-<prefix>odys_ev_2026
-<prefix>odys_ev_2027
-```
+| You type | Full name becomes |
+|---|---|
+| `odys_core` | `u123456789_odys_core` |
+| `odys_ev_2026` | `u123456789_odys_ev_2026` |
+| `odys_ev_2027` | `u123456789_odys_ev_2027` |
 
-where `<prefix>` is the account id Hostinger prepends (e.g. `u123456789_`).
+Create **one** MySQL user and grant it access to **all three**. This matters: the application runs queries that span databases, and they fail at runtime if the user can only reach some of them.
 
-Create **one** MySQL user and grant it access to **all three**. This matters: the application runs cross-database queries, and they fail at runtime if the user can only reach some of them.
+Why three? Raw pixel events get a **new database each year**, because Hostinger caps each database at 3 GB and one year of events at projected volume is roughly 2.5 GB. `odys_core` holds everything else permanently.
 
 ### 2. Configure
 
@@ -37,7 +37,16 @@ Create **one** MySQL user and grant it access to **all three**. This matters: th
 cp .env.example .env
 ```
 
-Fill in `DB_USER`, `DB_PASS`, `DB_PREFIX` and `ALERT_EMAIL_TO`. The file is commented throughout. Leave the Shopify values blank for now — they are only needed to onboard a store.
+Fill in six values: `DB_USER`, `DB_PASS`, `DB_CORE`, `DB_SHARD`, and `ALERT_EMAIL_TO`.
+
+`DB_CORE` and `DB_SHARD` are the **full** database names as hPanel displays them. Keep the literal `{year}` in `DB_SHARD` — the application substitutes it to work out which database a given date lives in:
+
+```
+DB_CORE=u123456789_odys_core
+DB_SHARD=u123456789_odys_ev_{year}
+```
+
+Leave the Shopify values blank for now — they are only needed to onboard a store.
 
 `.env` lives at the repo root, which is **above** `public_html` and therefore not web-reachable. Do not move it.
 
@@ -149,7 +158,7 @@ lifetime depends on it:
 
 ```sql
 SELECT ROW_FORMAT, CREATE_OPTIONS FROM information_schema.TABLES
-WHERE TABLE_SCHEMA='<prefix>odys_ev_2026' AND TABLE_NAME='events';
+WHERE TABLE_SCHEMA='<your DB_SHARD for 2026>' AND TABLE_NAME='events';
 -- expect: Compressed | row_format=COMPRESSED key_block_size=8
 ```
 

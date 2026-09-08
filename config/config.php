@@ -24,18 +24,22 @@ return [
     // Database — credentials from .env
     // -----------------------------------------------------------------
     'db' => [
-        'host'          => Env::get('DB_HOST', 'localhost'),
-        'port'          => Env::int('DB_PORT', 3306),
-        'user'          => Env::require('DB_USER'),
-        'pass'          => Env::get('DB_PASS', ''),
+        'host'    => Env::get('DB_HOST', 'localhost'),
+        'port'    => Env::int('DB_PORT', 3306),
+        'user'    => Env::require('DB_USER'),
+        'pass'    => Env::get('DB_PASS', ''),
 
-        // Hostinger prepends the account id to every database name.
-        'prefix'        => Env::get('DB_PREFIX', ''),
+        // Full database names, exactly as the host reports them.
+        //
+        // 'shard' carries a literal {year} placeholder: raw events get a new
+        // database each year because Hostinger caps each at 3 GB, so the code
+        // must be able to construct a name for a year it has not seen yet.
+        // Once a shard is provisioned, shard_registry.physical_name is the
+        // authoritative mapping and this is only used to propose new ones.
+        'core'    => Env::require('DB_CORE'),
+        'shard'   => Env::require('DB_SHARD'),
 
-        'core'          => Env::get('DB_CORE', 'odys_core'),
-        'shard_pattern' => Env::get('DB_SHARD_PATTERN', 'odys_ev_{year}'),
-
-        'charset'       => 'utf8mb4',
+        'charset' => 'utf8mb4',
     ],
 
     // -----------------------------------------------------------------

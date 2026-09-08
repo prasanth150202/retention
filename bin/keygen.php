@@ -58,7 +58,7 @@ if (is_file($keyFile) && $force) {
     if (is_file($root . '/.env') && is_file($configFile)) {
         try {
             $cfg  = require $configFile;
-            $name = ($cfg['db']['prefix'] ?? '') . ($cfg['db']['core'] ?? 'odys_core');
+            $name = $cfg['db']['core'];
             $pdo  = new PDO(
                 sprintf('mysql:host=%s;port=%d;dbname=%s;charset=utf8mb4',
                     $cfg['db']['host'], (int) $cfg['db']['port'], $name),

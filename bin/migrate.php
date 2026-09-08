@@ -45,21 +45,31 @@ $opts     = getopt('', ['dry-run', 'year::']);
 $dryRun   = array_key_exists('dry-run', $opts);
 $extraYear = isset($opts['year']) ? (int) $opts['year'] : null;
 
-$prefix   = $cfg['db']['prefix'] ?? '';
-$coreName = $prefix . ($cfg['db']['core'] ?? 'odys_core');
+$coreName = $cfg['db']['core'];
 
-/** Physical database name for an event shard year. */
-function shardPhysical(array $cfg, int $year): string
-{
-    $pattern = $cfg['db']['shard_pattern'] ?? 'odys_ev_{year}';
-    return ($cfg['db']['prefix'] ?? '') . str_replace('{year}', (string) $year, $pattern);
+if (!str_contains($cfg['db']['shard'], '{year}')) {
+    fwrite(STDERR, "ERROR: DB_SHARD must contain the literal {year} placeholder.\n");
+    fwrite(STDERR, "Got: {$cfg['db']['shard']}\n");
+    fwrite(STDERR, "Example: u123456789_odys_ev_{year}\n");
+    exit(1);
 }
 
-/** Logical shard name, as recorded in shard_registry and the plan document. */
-function shardLogical(array $cfg, int $year): string
+/** Real database name for a shard year, e.g. u123456789_odys_ev_2026. */
+function shardPhysical(array $cfg, int $year): string
 {
-    $pattern = $cfg['db']['shard_pattern'] ?? 'odys_ev_{year}';
-    return str_replace('{year}', (string) $year, $pattern);
+    return str_replace('{year}', (string) $year, $cfg['db']['shard']);
+}
+
+/**
+ * Stable logical id recorded in shard_registry.shard_name.
+ *
+ * Deliberately independent of the hosting account, so the registry stays
+ * meaningful if the site is ever migrated to a host with a different
+ * database naming scheme. physical_name carries the real name.
+ */
+function shardLogical(int $year): string
+{
+    return 'ev_' . $year;
 }
 
 function connect(array $cfg, string $database): PDO
@@ -222,7 +232,7 @@ $missing = [];
 
 foreach ($years as $year) {
     $physical = shardPhysical($cfg, $year);
-    $logical  = shardLogical($cfg, $year);
+    $logical  = shardLogical($year);
 
     try {
         $shard = connect($cfg, $physical);
@@ -278,12 +288,11 @@ if ($missing !== []) {
     echo "=====================================================================\n\n";
 
     foreach ($missing as [$year, $physical, $logical]) {
-        $suffix = $prefix !== '' && str_starts_with($physical, $prefix)
-            ? substr($physical, strlen($prefix))
-            : $physical;
         echo "  Year {$year}\n";
         echo "    hPanel -> Databases -> Create new database\n";
-        echo "    Name field: {$suffix}      (hPanel prepends '{$prefix}')\n";
+        echo "    Full name must end up as:  {$physical}\n";
+        echo "    (hPanel prepends your account id to whatever you type and\n";
+        echo "     shows the full result - match it to the line above.)\n";
         echo "    Then grant user '{$cfg['db']['user']}' access to it.\n\n";
     }
 
