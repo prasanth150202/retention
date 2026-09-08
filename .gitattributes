@@ -1,0 +1,22 @@
+# Deployment target is Linux (Hostinger). Development happens on Windows,
+# where Git would otherwise check these out with CRLF. Force LF in the
+# repository and on checkout so what runs on the server matches what is
+# reviewed here.
+* text=auto eol=lf
+
+*.php   text eol=lf
+*.sql   text eol=lf
+*.md    text eol=lf
+*.js    text eol=lf
+*.css   text eol=lf
+*.json  text eol=lf
+*.liquid text eol=lf
+.env.example text eol=lf
+
+# Binary — never touch
+*.mmdb  binary
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.pdf   binary
+*.ico   binary

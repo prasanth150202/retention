@@ -1,0 +1,33 @@
+# ---------------------------------------------------------------------
+# Environment — the ONLY file the server admin edits. Holds the database
+# credentials. Never commit it; .env.example is the tracked template.
+# ---------------------------------------------------------------------
+.env
+
+# ---------------------------------------------------------------------
+# Secrets. Losing secrets/master.key makes every stored Shopify Admin API
+# token permanently unrecoverable — back it up OFFLINE, not here.
+# ---------------------------------------------------------------------
+secrets/
+*.key
+*.key.*.bak
+*.pem
+*.mmdb
+token.json
+
+# ---------------------------------------------------------------------
+# Runtime state, created on the server outside the document root. Spool
+# files contain visitor data, so they are deliberately untracked.
+# ---------------------------------------------------------------------
+storage/
+
+# ---------------------------------------------------------------------
+# Local
+# ---------------------------------------------------------------------
+.DS_Store
+._*
+Thumbs.db
+*.log
+.idea/
+.vscode/
+*.swp
