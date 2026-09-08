@@ -39,6 +39,24 @@ return [
         'core'    => Env::require('DB_CORE'),
         'shard'   => Env::require('DB_SHARD'),
 
+        // Per-shard credential overrides, discovered from .env keys shaped
+        // DB_SHARD_<YEAR>_USER / _PASS / _NAME.
+        //
+        // Hostinger issues one credential per database, so each yearly shard
+        // normally has its own user. Where a year has no override, the core
+        // credentials are used instead — which covers hosts that allow one
+        // user across several databases.
+        'shard_overrides' => (static function (): array {
+            $out = [];
+            foreach (Env::allWithPrefix('DB_SHARD_') as $suffix => $value) {
+                if (!preg_match('/^(\d{4})_(USER|PASS|NAME)$/', $suffix, $m)) {
+                    continue;
+                }
+                $out[(int) $m[1]][strtolower($m[2])] = $value;
+            }
+            return $out;
+        })(),
+
         'charset' => 'utf8mb4',
     ],
 

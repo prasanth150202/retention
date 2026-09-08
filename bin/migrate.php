@@ -28,22 +28,34 @@ if (PHP_SAPI !== 'cli') {
 
 $root = dirname(__DIR__);
 
-if (!is_file($root . '/.env')) {
-    fwrite(STDERR, "ERROR: .env not found at the repo root.\n");
+$opts      = getopt('', ['dry-run', 'year::', 'env::']);
+$dryRun    = array_key_exists('dry-run', $opts);
+$extraYear = isset($opts['year']) ? (int) $opts['year'] : null;
+
+// --env lets one checkout target several environments (local vs production)
+// without swapping files around. Env::load() is first-wins, so loading here
+// means config.php's own load() call becomes a no-op.
+$envFile = isset($opts['env']) && $opts['env'] !== false
+    ? (string) $opts['env']
+    : $root . '/.env';
+
+if (!is_file($envFile)) {
+    fwrite(STDERR, "ERROR: environment file not found: {$envFile}\n");
     fwrite(STDERR, "Copy .env.example to .env and fill in the database credentials.\n");
     exit(1);
 }
 
+require_once $root . '/app/lib/Env.php';
+
 try {
+    Env::load($envFile);
     $cfg = require $root . '/config/config.php';
 } catch (Throwable $e) {
     fwrite(STDERR, "ERROR loading configuration:\n  " . $e->getMessage() . "\n");
     exit(1);
 }
 
-$opts     = getopt('', ['dry-run', 'year::']);
-$dryRun   = array_key_exists('dry-run', $opts);
-$extraYear = isset($opts['year']) ? (int) $opts['year'] : null;
+echo "Environment file: {$envFile}\n";
 
 $coreName = $cfg['db']['core'];
 
@@ -57,7 +69,26 @@ if (!str_contains($cfg['db']['shard'], '{year}')) {
 /** Real database name for a shard year, e.g. u123456789_odys_ev_2026. */
 function shardPhysical(array $cfg, int $year): string
 {
-    return str_replace('{year}', (string) $year, $cfg['db']['shard']);
+    return $cfg['db']['shard_overrides'][$year]['name']
+        ?? str_replace('{year}', (string) $year, $cfg['db']['shard']);
+}
+
+/**
+ * Credentials for a shard year.
+ *
+ * Falls back to the core credentials when a year has no override, which
+ * covers hosts that allow one user across several databases. Hostinger
+ * issues one credential per database, so in production each year normally
+ * has its own DB_SHARD_<YEAR>_USER / _PASS block.
+ */
+function shardCredentials(array $cfg, int $year): array
+{
+    $o = $cfg['db']['shard_overrides'][$year] ?? [];
+    return [
+        'user' => $o['user'] ?? $cfg['db']['user'],
+        'pass' => $o['pass'] ?? $cfg['db']['pass'],
+        'own'  => isset($o['user']),
+    ];
 }
 
 /**
@@ -72,7 +103,7 @@ function shardLogical(int $year): string
     return 'ev_' . $year;
 }
 
-function connect(array $cfg, string $database): PDO
+function connect(array $cfg, string $database, ?string $user = null, ?string $pass = null): PDO
 {
     $dsn = sprintf(
         'mysql:host=%s;port=%d;dbname=%s;charset=%s',
@@ -82,7 +113,7 @@ function connect(array $cfg, string $database): PDO
         $cfg['db']['charset'] ?? 'utf8mb4'
     );
 
-    return new PDO($dsn, $cfg['db']['user'], $cfg['db']['pass'], [
+    return new PDO($dsn, $user ?? $cfg['db']['user'], $pass ?? $cfg['db']['pass'], [
         PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
         PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
         PDO::ATTR_EMULATE_PREPARES   => false,
@@ -220,25 +251,41 @@ foreach ($coreFiles as $file) {
 // Shards — current year and next year, so rotation never happens late.
 // ---------------------------------------------------------------------
 
-$years = [(int) gmdate('Y'), (int) gmdate('Y') + 1];
-if ($extraYear !== null && !in_array($extraYear, $years, true)) {
-    $years[] = $extraYear;
+$thisYear = (int) gmdate('Y');
+$nextYear = $thisYear + 1;
+
+// Only the shard covering today is genuinely required. Next year's is a
+// warning until the year is nearly over — there is no sense blocking a
+// migration in January on a database not needed for eleven months.
+$daysLeftInYear = (int) ((strtotime(($thisYear + 1) . '-01-01') - time()) / 86400);
+$nextYearUrgent = $daysLeftInYear <= 60;
+
+$years = [$thisYear => true, $nextYear => $nextYearUrgent];
+if ($extraYear !== null) {
+    $years[$extraYear] = true;   // explicitly requested, so treat as required
 }
-sort($years);
+ksort($years);
 
 echo "\nEvent shards:\n";
 
 $missing = [];
+$warned  = [];
 
-foreach ($years as $year) {
+foreach ($years as $year => $required) {
     $physical = shardPhysical($cfg, $year);
     $logical  = shardLogical($year);
+    $cred     = shardCredentials($cfg, $year);
 
     try {
-        $shard = connect($cfg, $physical);
+        $shard = connect($cfg, $physical, $cred['user'], $cred['pass']);
     } catch (PDOException $e) {
-        echo "  [MISSING] {$physical}\n";
-        $missing[] = [$year, $physical, $logical];
+        if ($required) {
+            echo "  [MISSING] {$physical}" . ($cred['own'] ? " (own credentials)" : "") . "\n";
+            $missing[] = [$year, $physical, $logical, $cred];
+        } else {
+            echo "  [later]   {$physical} not created yet — not needed for {$daysLeftInYear} days\n";
+            $warned[] = [$year, $physical, $logical, $cred];
+        }
         continue;
     }
 
@@ -280,6 +327,14 @@ foreach ($years as $year) {
 // Report
 // ---------------------------------------------------------------------
 
+if ($warned !== []) {
+    echo "\n";
+    foreach ($warned as [$year, $physical, , ]) {
+        echo "  NOTE: create {$physical} before {$year}-01-01. This command will\n";
+        echo "        start refusing to run 60 days beforehand as a reminder.\n";
+    }
+}
+
 if ($missing !== []) {
     echo "\n";
     echo "=====================================================================\n";
@@ -287,17 +342,29 @@ if ($missing !== []) {
     echo " Shared hosting does not allow CREATE DATABASE over SQL.\n";
     echo "=====================================================================\n\n";
 
-    foreach ($missing as [$year, $physical, $logical]) {
+    foreach ($missing as [$year, $physical, $logical, $cred]) {
         echo "  Year {$year}\n";
         echo "    hPanel -> Databases -> Create new database\n";
         echo "    Full name must end up as:  {$physical}\n";
         echo "    (hPanel prepends your account id to whatever you type and\n";
-        echo "     shows the full result - match it to the line above.)\n";
-        echo "    Then grant user '{$cfg['db']['user']}' access to it.\n\n";
+        echo "     shows the full result - match it to the line above.)\n\n";
+
+        if ($cred['own']) {
+            echo "    Credentials for it are already in .env as\n";
+            echo "      DB_SHARD_{$year}_USER / DB_SHARD_{$year}_PASS\n\n";
+        } else {
+            echo "    Then EITHER grant user '{$cfg['db']['user']}' access to it,\n";
+            echo "    OR — if your host issues one credential per database, as\n";
+            echo "    Hostinger does — add the new database's own credentials to\n";
+            echo "    .env:\n\n";
+            echo "      DB_SHARD_{$year}_USER=<the new user>\n";
+            echo "      DB_SHARD_{$year}_PASS=<the new password>\n\n";
+        }
     }
 
-    echo "  The grant matters: one MySQL user must reach the core database AND\n";
-    echo "  every shard, or cross-database queries fail at runtime.\n\n";
+    echo "  Each database must be reachable by SOME credential this app holds.\n";
+    echo "  Cross-database JOINs are never issued, so the databases do not need\n";
+    echo "  to share a user — but every one of them must be reachable.\n\n";
     exit(2);
 }
 

@@ -83,6 +83,25 @@ final class Env
         return $val;
     }
 
+    /**
+     * All keys matching a prefix, with the prefix stripped.
+     *
+     * Used to discover per-shard credential blocks (DB_SHARD_2026_USER,
+     * DB_SHARD_2027_USER, …) without config.php having to know in advance
+     * which years exist. Hostinger issues one credential per database, so
+     * each yearly shard may carry its own user and password.
+     */
+    public static function allWithPrefix(string $prefix): array
+    {
+        $out = [];
+        foreach (self::$vars as $key => $val) {
+            if (str_starts_with($key, $prefix)) {
+                $out[substr($key, strlen($prefix))] = $val;
+            }
+        }
+        return $out;
+    }
+
     public static function int(string $key, int $default = 0): int
     {
         $val = self::get($key);
