@@ -28,16 +28,15 @@ if (PHP_SAPI !== 'cli') {
 
 $root = dirname(__DIR__);
 
+require_once $root . '/app/lib/bootstrap.php';
+
 $opts      = getopt('', ['dry-run', 'year::', 'env::']);
 $dryRun    = array_key_exists('dry-run', $opts);
 $extraYear = isset($opts['year']) ? (int) $opts['year'] : null;
 
 // --env lets one checkout target several environments (local vs production)
-// without swapping files around. Env::load() is first-wins, so loading here
-// means config.php's own load() call becomes a no-op.
-$envFile = isset($opts['env']) && $opts['env'] !== false
-    ? (string) $opts['env']
-    : $root . '/.env';
+// without swapping files around.
+$envFile = odysseus_env_arg() ?? $root . '/.env';
 
 if (!is_file($envFile)) {
     fwrite(STDERR, "ERROR: environment file not found: {$envFile}\n");
@@ -45,11 +44,8 @@ if (!is_file($envFile)) {
     exit(1);
 }
 
-require_once $root . '/app/lib/Env.php';
-
 try {
-    Env::load($envFile);
-    $cfg = require $root . '/config/config.php';
+    odysseus_boot($envFile);
 } catch (Throwable $e) {
     fwrite(STDERR, "ERROR loading configuration:\n  " . $e->getMessage() . "\n");
     exit(1);
@@ -57,37 +53,34 @@ try {
 
 echo "Environment file: {$envFile}\n";
 
-$coreName = $cfg['db']['core'];
+$coreName = Config::require('db.core');
+$dbUser   = Config::require('db.user');
 
-if (!str_contains($cfg['db']['shard'], '{year}')) {
+if (!str_contains(Config::require('db.shard'), '{year}')) {
     fwrite(STDERR, "ERROR: DB_SHARD must contain the literal {year} placeholder.\n");
-    fwrite(STDERR, "Got: {$cfg['db']['shard']}\n");
+    fwrite(STDERR, 'Got: ' . Config::require('db.shard') . "\n");
     fwrite(STDERR, "Example: u123456789_odys_ev_{year}\n");
     exit(1);
 }
 
-/** Real database name for a shard year, e.g. u123456789_odys_ev_2026. */
-function shardPhysical(array $cfg, int $year): string
-{
-    return $cfg['db']['shard_overrides'][$year]['name']
-        ?? str_replace('{year}', (string) $year, $cfg['db']['shard']);
-}
-
 /**
- * Credentials for a shard year.
+ * Shard name and credentials for a year.
  *
- * Falls back to the core credentials when a year has no override, which
- * covers hosts that allow one user across several databases. Hostinger
- * issues one credential per database, so in production each year normally
- * has its own DB_SHARD_<YEAR>_USER / _PASS block.
+ * Delegates to Db::shardTarget() so this tool and the application can never
+ * disagree about which database a year lives in — a disagreement here would
+ * apply the schema to one database while the app wrote to another.
+ *
+ * @return array{name:string,user:string,pass:string,own:bool}
  */
-function shardCredentials(array $cfg, int $year): array
+function shardTarget(int $year): array
 {
-    $o = $cfg['db']['shard_overrides'][$year] ?? [];
+    [$name, $user, $pass] = Db::shardTarget($year);
+
     return [
-        'user' => $o['user'] ?? $cfg['db']['user'],
-        'pass' => $o['pass'] ?? $cfg['db']['pass'],
-        'own'  => isset($o['user']),
+        'name' => $name,
+        'user' => $user,
+        'pass' => $pass,
+        'own'  => isset((Config::get('db.shard_overrides', [])[$year] ?? [])['user']),
     ];
 }
 
@@ -103,21 +96,13 @@ function shardLogical(int $year): string
     return 'ev_' . $year;
 }
 
-function connect(array $cfg, string $database, ?string $user = null, ?string $pass = null): PDO
+/**
+ * Delegates to Db::connect() so this tool uses exactly the pooling, UTC
+ * session and error handling the application uses at runtime.
+ */
+function connect(string $database, string $user, string $pass): PDO
 {
-    $dsn = sprintf(
-        'mysql:host=%s;port=%d;dbname=%s;charset=%s',
-        $cfg['db']['host'],
-        (int) ($cfg['db']['port'] ?? 3306),
-        $database,
-        $cfg['db']['charset'] ?? 'utf8mb4'
-    );
-
-    return new PDO($dsn, $user ?? $cfg['db']['user'], $pass ?? $cfg['db']['pass'], [
-        PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
-        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-        PDO::ATTR_EMULATE_PREPARES   => false,
-    ]);
+    return Db::connect($database, $user, $pass);
 }
 
 /**
@@ -218,10 +203,10 @@ echo "Project Odysseus — migrate" . ($dryRun ? " (DRY RUN)" : "") . "\n\n";
 echo "Core database: {$coreName}\n";
 
 try {
-    $core = connect($cfg, $coreName);
-} catch (PDOException $e) {
+    $core = connect($coreName, $dbUser, (string) Config::get('db.pass', ''));
+} catch (Throwable $e) {
     fwrite(STDERR, "\nCannot connect to core database '{$coreName}'.\n");
-    fwrite(STDERR, "Create it in hPanel -> Databases, then grant '{$cfg['db']['user']}' access to it.\n\n");
+    fwrite(STDERR, "Create it in hPanel -> Databases, then grant '{$dbUser}' access to it.\n\n");
     fwrite(STDERR, $e->getMessage() . "\n");
     exit(1);
 }
@@ -272,13 +257,13 @@ $missing = [];
 $warned  = [];
 
 foreach ($years as $year => $required) {
-    $physical = shardPhysical($cfg, $year);
+    $cred     = shardTarget($year);
+    $physical = $cred['name'];
     $logical  = shardLogical($year);
-    $cred     = shardCredentials($cfg, $year);
 
     try {
-        $shard = connect($cfg, $physical, $cred['user'], $cred['pass']);
-    } catch (PDOException $e) {
+        $shard = connect($physical, $cred['user'], $cred['pass']);
+    } catch (Throwable $e) {
         if ($required) {
             echo "  [MISSING] {$physical}" . ($cred['own'] ? " (own credentials)" : "") . "\n";
             $missing[] = [$year, $physical, $logical, $cred];
@@ -317,7 +302,7 @@ foreach ($years as $year => $required) {
             $physical,
             sprintf('%d-01-01', $year),
             sprintf('%d-12-31', $year),
-            $cfg['storage']['shard_bytes_limit'] ?? 3221225472,
+            Config::get('storage.shard_bytes_limit', 3221225472),
         ]);
         echo "  [reg]   {$logical} registered {$year}-01-01 .. {$year}-12-31\n";
     }
@@ -353,7 +338,7 @@ if ($missing !== []) {
             echo "    Credentials for it are already in .env as\n";
             echo "      DB_SHARD_{$year}_USER / DB_SHARD_{$year}_PASS\n\n";
         } else {
-            echo "    Then EITHER grant user '{$cfg['db']['user']}' access to it,\n";
+            echo "    Then EITHER grant user '{$dbUser}' access to it,\n";
             echo "    OR — if your host issues one credential per database, as\n";
             echo "    Hostinger does — add the new database's own credentials to\n";
             echo "    .env:\n\n";
