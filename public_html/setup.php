@@ -96,17 +96,41 @@ if ($action !== '' && $_SERVER['REQUEST_METHOD'] === 'POST') {
         switch ($action) {
             case 'dirs':
                 $made = [];
-                foreach (['spool', 'processed', 'failed', 'locks', 'logs'] as $key) {
-                    $dir = Config::get('paths.' . $key);
-                    if (!is_dir($dir)) {
-                        if (!mkdir($dir, 0700, true) && !is_dir($dir)) {
-                            throw new RuntimeException("Could not create {$dir}");
-                        }
-                        $made[] = basename($dir);
+                $want = [
+                    'spool'     => Config::get('paths.spool'),
+                    'processed' => Config::get('paths.processed'),
+                    'failed'    => Config::get('paths.failed'),
+                    'locks'     => Config::get('paths.locks'),
+                    'logs'      => Config::get('paths.logs'),
+                    'secrets'   => Config::get('paths.secrets'),
+                    'salts'     => Config::get('secrets.salt_dir'),
+                ];
+
+                foreach ($want as $label => $dir) {
+                    if (is_dir($dir)) {
+                        continue;
                     }
+                    // Recursive: creates parents too, so nothing has to be
+                    // made by hand in File Manager first.
+                    if (!@mkdir($dir, 0700, true) && !is_dir($dir)) {
+                        $why = 'PHP could not create it.';
+                        $ob  = trim((string) ini_get('open_basedir'));
+                        if ($ob !== '') {
+                            $why .= ' This host restricts PHP to open_basedir (' . htmlspecialchars($ob)
+                                  . '), so the path must sit inside one of those directories.';
+                        }
+                        $why .= ' Either pick a path inside the allowed area, or create the folder'
+                              . ' once in hPanel File Manager and press this button again.';
+                        throw new RuntimeException("Could not create {$dir}. {$why}");
+                    }
+                    $made[] = $label;
                 }
+
                 $results[] = ['ok', 'Runtime directories',
-                    $made === [] ? 'Already present.' : 'Created: ' . implode(', ', $made)];
+                    ($made === [] ? 'All already present.' : 'Created: ' . implode(', ', $made))
+                    . '<br><small>storage: <code>' . htmlspecialchars(Config::get('paths.storage'))
+                    . '</code><br>secrets: <code>' . htmlspecialchars(Config::get('paths.secrets'))
+                    . '</code></small>'];
                 break;
 
             case 'keygen':
@@ -198,6 +222,35 @@ $secretsDir = Config::get('paths.secrets');
 $inRepo     = str_starts_with($norm($storageDir), $norm($root))
            || str_starts_with($norm($secretsDir), $norm($root));
 
+// Suggest a location that is outside the repository (so a deploy cannot
+// delete it), above the document root (so it is not web-reachable), and
+// inside open_basedir if the host sets one.
+$openBasedir = trim((string) ini_get('open_basedir'));
+$suggested   = dirname($norm($root)) . '/odysseus-data';
+
+if ($openBasedir !== '') {
+    $allowed = array_map($norm, explode(PATH_SEPARATOR, $openBasedir));
+    $ok      = false;
+    foreach ($allowed as $a) {
+        if ($a !== '' && str_starts_with($suggested, $a)) {
+            $ok = true;
+            break;
+        }
+    }
+    if (!$ok) {
+        // Fall back to a sibling of the repository that is definitely inside
+        // the sandbox, still outside the git working tree.
+        $suggested = $norm($root) . '/../odysseus-data';
+        foreach ($allowed as $a) {
+            if ($a !== '') {
+                $suggested = rtrim($a, '/') . '/odysseus-data';
+                break;
+            }
+        }
+    }
+    $checks[] = ['open_basedir', $openBasedir, true];
+}
+
 $checks[] = [
     'Storage path',
     $storageDir . ($inRepo ? '  — INSIDE the repository' : ''),
@@ -271,11 +324,16 @@ $tokenQs = '?token=' . rawurlencode($supplied);
         re-fetched from Shopify; <strong>pixel events cannot be recovered from
         anywhere</strong>.</li>
   </ul>
-  <p>Create a folder outside the repository, then set both in <code>.env</code>:</p>
-  <pre>STORAGE_PATH=/home/&lt;account&gt;/odysseus-data/storage
-SECRETS_PATH=/home/&lt;account&gt;/odysseus-data/secrets</pre>
-  <p>Do this <em>before</em> generating the encryption key, so the key is written
-  somewhere a deploy cannot reach.</p>
+  <p>Add these two lines to <code>.env</code>, then reload this page and press
+  <strong>Create runtime directories</strong> — it creates the whole tree for you,
+  parents included. Nothing to make by hand.</p>
+  <pre>STORAGE_PATH=<?= htmlspecialchars($suggested) ?>/storage
+SECRETS_PATH=<?= htmlspecialchars($suggested) ?>/secrets</pre>
+  <p>That path is worked out from where this file actually sits: outside the
+  repository so a deploy cannot delete it, above the document root so it is not
+  web-reachable<?= $openBasedir !== '' ? ', and inside this host&rsquo;s open_basedir' : '' ?>.</p>
+  <p>Do this <em>before</em> generating the encryption key. Generating it first and
+  moving it afterwards is exactly the sequence that loses it.</p>
 </div>
 <?php endif; ?>
 
