@@ -9,7 +9,7 @@ Full design: **[TECHNICAL_PLAN.md](TECHNICAL_PLAN.md)** — read §3 (constraint
 | Host | `retention.digifyce.com` (Hostinger shared, hPanel) |
 | Stack | PHP 8 + MySQL, no build step, no Node |
 | Deploy | Hostinger Git → `~/domains/retention.digifyce.com/` |
-| Status | **M1 in progress** — schema and migration runner done, verified against MariaDB 10.11 |
+| Status | **M1 complete** — schema, ingest, staff console, snippet generator. Verified against MariaDB 10.11 and production 11.8 |
 
 ---
 
@@ -94,6 +94,45 @@ If a shard database is missing, the runner prints the exact name to create in hP
 Press **Step 5** on the setup page. It downloads DB-IP City Lite (~60 MB, MMDB) directly to the server — no account, no licence key, nothing to upload. Chosen over MaxMind GeoLite2 for exactly that reason; the format and reader are identical.
 
 Licensed CC-BY 4.0, so the Geography tab must carry an "IP Geolocation by DB-IP" link back to db-ip.com. Required before the first import runs, not before migrating.
+
+### 7. Create a staff account and connect a store
+
+Setup page → **Step 6** creates the first account (nothing can sign in until it exists, and it
+cannot be done from the console for that reason). Then sign in at `/`, connect a store, and copy
+the two snippets it generates.
+
+Remove `SETUP_TOKEN` from `.env` afterwards and the setup page turns itself off.
+
+### 8. Schedule the cron jobs
+
+hPanel → Cron Jobs. Adjust the interval to whatever your plan's minimum allows; the only cost of
+a longer one is data freshness.
+
+```
+*/5 * * * *   /usr/bin/php /home/<account>/domains/<site>/public_html/app/cron/import.php
+15 * * * *    /usr/bin/php /home/<account>/domains/<site>/public_html/app/cron/health_check.php --quiet
+```
+
+`health_check` is not optional. When an event shard fills, MySQL refuses writes and the spool
+grows; ingest survives that by design, but only if somebody creates the next database before the
+disk runs out. It also catches a cron entry that has silently stopped running — otherwise
+indistinguishable from a quiet week.
+
+---
+
+## The two snippets
+
+Generated per store, pre-filled with that store's write key, on the store page in the console.
+
+**Custom Pixel** — Settings → Customer events. Owns the funnel: it is the only source that can
+see checkout. Subscribes to thirteen events and deliberately omits `input_changed`,
+`input_blurred` and `input_focused`, which carry raw email addresses and phone numbers.
+
+**Theme snippet** — `theme.liquid`, before `</body>`. Optional. The pixel runs sandboxed with no
+access to Liquid, so a logged-in returning customer is anonymous to it until checkout; this
+identifies them while browsing. It never reports page or product views — both feeds reporting
+them would double every funnel step, which is why the two feeds use disjoint event-code ranges
+(`EventType`, liquid at 64+).
 
 ---
 

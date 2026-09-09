@@ -173,6 +173,22 @@ if ($action !== '' && $_SERVER['REQUEST_METHOD'] === 'POST') {
                     . 'git and cannot be recovered. Losing it means re-onboarding every store.'];
                 break;
 
+            case 'staff':
+                // The only way to create the first account: there is nobody to
+                // sign in as yet, so this cannot live behind the login.
+                require_once $root . '/app/lib/Auth.php';
+
+                $email = trim((string) ($_POST['email'] ?? ''));
+                $name  = trim((string) ($_POST['name'] ?? ''));
+                $pass  = (string) ($_POST['password'] ?? '');
+
+                $id = Auth::createUser($email, $pass, $name);
+
+                $results[] = ['ok', 'Staff account',
+                    'Created <code>' . htmlspecialchars($email) . '</code> (id ' . $id . '). '
+                    . 'Sign in at <a href="/">the console</a>.'];
+                break;
+
             case 'geoip':
                 // DB-IP City Lite rather than MaxMind GeoLite2: same MMDB
                 // format and same reader, but a direct download with no
@@ -679,6 +695,38 @@ the encryption key must land somewhere a deploy cannot delete.</p>
   The IP itself is never stored. Not needed until the first import runs, and
   it may take a minute.<br>
   <button name="action" value="geoip">Download geo database</button></p>
+</form>
+
+<form method="post" action="setup.php<?= htmlspecialchars($tokenQs) ?>">
+  <input type="hidden" name="token" value="<?= htmlspecialchars($supplied) ?>">
+  <p><strong>Step 6.</strong> Create the first staff account. Nothing can sign in to the
+  console until this exists, and it cannot be done from the console itself for the same
+  reason.<br>
+  <?php
+  $staffCount = 0;
+  try {
+      $staffCount = (int) Db::core()->query('SELECT COUNT(*) FROM staff_users')->fetchColumn();
+  } catch (Throwable) {
+      // Table not migrated yet; Step 4 comes first.
+  }
+  ?>
+  <?php if ($staffCount > 0): ?>
+    <span class="ok"><?= $staffCount ?> account(s) already exist.</span>
+    Creating another is fine.
+  <?php endif; ?>
+  </p>
+  <p>
+    <input type="email" name="email" placeholder="you@digifyce.com" required
+           style="font:inherit;padding:8px 10px;border:1px solid #8886;border-radius:6px;width:250px">
+    <input type="text" name="name" placeholder="Your name"
+           style="font:inherit;padding:8px 10px;border:1px solid #8886;border-radius:6px;width:170px">
+    <input type="password" name="password" placeholder="Password (12+ characters)" required
+           minlength="12"
+           style="font:inherit;padding:8px 10px;border:1px solid #8886;border-radius:6px;width:230px">
+    <button name="action" value="staff">Create staff account</button>
+  </p>
+  <p class="sub" style="font-size:13px">This account can read every connected store's revenue
+  and customer data, so the 12-character minimum is enforced rather than suggested.</p>
 </form>
 
 <h2>When you are finished</h2>
