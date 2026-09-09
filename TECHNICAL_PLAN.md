@@ -219,14 +219,20 @@ Neither is instant. Both should be filed before Phase 3 begins.
                                          ├──► visitor_key  (unifies both feeds)
   Pixel:  event.clientId (from _shopify_y)┘
                                          │
-  Pixel checkout_completed ──► checkout.token ──┐
-                                                ├──► order
-  Admin API order ──────────► checkout_token ───┘
-                                                │
+  Pixel checkout_completed ──► order.id ─┐
+                                         ├──► order          (completed purchases)
+  Admin API order ──────────► order_id ──┘
+                                         │
+  Pixel checkout events ─────► checkout.token ──► abandoned checkout
+                                         │
   order ──► customer_id / phone / email ──► person_id ──► order_sequence (1st, 2nd, 3rd…)
 ```
 
 The pixel's `clientId` derives from the `_shopify_y` cookie, which the Liquid snippet reads directly. That is what makes a single visitor identity across two feeds possible.
+
+> **Correction, made during implementation.** Earlier drafts of this document named `checkout_token` as the single join between behaviour and revenue. That is correct for the REST Admin API and wrong for GraphQL, which does not expose `checkout_token` on `Order` at all — and GraphQL is what §13.1 commits to, for bulk operations.
+>
+> It turns out not to matter. The pixel's `checkout_completed` event carries `data.checkout.order.id`, so `events.order_ref` joins directly to `orders.order_id` with no token in between. `checkout_token` remains the join for **abandoned** checkouts, which have no order to point at. Both keys are stored; each is used where it applies.
 
 ---
 

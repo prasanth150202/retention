@@ -27,6 +27,7 @@ require_once __DIR__ . '/Db.php';
 require_once __DIR__ . '/Shard.php';
 require_once __DIR__ . '/Job.php';
 require_once __DIR__ . '/ShopifyOAuth.php';
+require_once __DIR__ . '/ShopifyApi.php';
 require_once __DIR__ . '/Dim.php';
 require_once __DIR__ . '/GeoIp.php';
 require_once __DIR__ . '/Migrator.php';

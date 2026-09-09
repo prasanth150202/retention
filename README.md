@@ -9,7 +9,7 @@ Full design: **[TECHNICAL_PLAN.md](TECHNICAL_PLAN.md)** — read §3 (constraint
 | Host | `retention.digifyce.com` (Hostinger shared, hPanel) |
 | Stack | PHP 8 + MySQL, no build step, no Node |
 | Deploy | Hostinger Git → `~/domains/retention.digifyce.com/` |
-| Status | **M1 complete** — schema, ingest, staff console, snippet generator. Verified against MariaDB 10.11 and production 11.8 |
+| Status | **M1–M3 built** — schema, ingest, console, snippets, OAuth, order sync. Untested against a live store |
 
 ---
 
@@ -61,55 +61,60 @@ Running `migrate.php` against more than one environment? Use `--env=.env.product
 
 `.env` lives at the repo root, which is **above** `public_html` and therefore not web-reachable. Do not move it.
 
-### 3. Create runtime directories
+### 3. Run setup from the browser
 
-These are not in git, because spool files contain visitor data:
+Most shared plans have no shell, so the one-time steps run as a web page. Add a long random
+`SETUP_TOKEN` to `.env`, then open:
 
-```bash
-mkdir -p storage/{spool,processed,failed,locks,logs}
-chmod 700 storage
+```
+https://<your-site>/setup.php?token=<that value>
 ```
 
-### 4. Generate the encryption key
+It reports what is healthy and what is not, and runs the steps in order:
 
-```bash
-php bin/keygen.php
-```
+| Step | Does |
+|---|---|
+| 1 | Confirms where runtime data will live — outside the repo, above the document root |
+| 2 | Creates `storage/` and `secrets/`, parents included |
+| 3 | Generates `secrets/master.key`, which encrypts stored Shopify tokens |
+| 4 | Applies the database schema |
+| 5 | Downloads the geo database (~60 MB, no account needed) |
+| 6 | Creates the first staff account |
 
-This writes `secrets/master.key`, which encrypts stored Shopify API tokens.
+**Back up `master.key` offline.** It is not in git and cannot be regenerated — losing it makes
+every stored Shopify token permanently unreadable and forces every store to be re-onboarded.
+Step 3 refuses to overwrite an existing key for that reason.
 
-**Back it up offline.** It is not in git and cannot be regenerated — losing it makes every stored token permanently unrecoverable and forces every store to be re-onboarded.
+A missing shard database stops step 4 with the exact name to create in hPanel, rather than
+half-applying.
 
-### 5. Run migrations
+The geo database is DB-IP City Lite, chosen over MaxMind GeoLite2 because it downloads directly
+with no account or licence key — which matters on a host with no shell. Identical format and
+reader. It is CC-BY licensed, so the Geography tab must carry an "IP Geolocation by DB-IP" link
+back to db-ip.com. Only needed before the first import runs.
 
-```bash
-php bin/migrate.php --dry-run    # inspect first
-php bin/migrate.php
-```
+**With a shell**, the same work is `php bin/keygen.php` and `php bin/migrate.php --dry-run`, then
+without the flag. Both drive the same code the setup page does.
 
-If a shard database is missing, the runner prints the exact name to create in hPanel and exits with code 2 rather than half-applying. Create it, grant the user, re-run.
+### 4. Sign in and connect a store
 
-### 6. Geo database
+Sign in at `/`, connect a store, and copy the two snippets it generates. Installing them starts
+data flowing immediately — no Shopify API connection is needed for behavioural tracking.
 
-Press **Step 5** on the setup page. It downloads DB-IP City Lite (~60 MB, MMDB) directly to the server — no account, no licence key, nothing to upload. Chosen over MaxMind GeoLite2 for exactly that reason; the format and reader are identical.
-
-Licensed CC-BY 4.0, so the Geography tab must carry an "IP Geolocation by DB-IP" link back to db-ip.com. Required before the first import runs, not before migrating.
-
-### 7. Create a staff account and connect a store
-
-Setup page → **Step 6** creates the first account (nothing can sign in until it exists, and it
-cannot be done from the console for that reason). Then sign in at `/`, connect a store, and copy
-the two snippets it generates.
+Connecting the Shopify API is a separate, optional step on the store page. It adds order totals,
+refunds, customer history and abandoned checkouts — everything revenue and retention are
+calculated from.
 
 Remove `SETUP_TOKEN` from `.env` afterwards and the setup page turns itself off.
 
-### 8. Schedule the cron jobs
+### 5. Schedule the cron jobs
 
 hPanel → Cron Jobs. Adjust the interval to whatever your plan's minimum allows; the only cost of
 a longer one is data freshness.
 
 ```
 */5 * * * *   /usr/bin/php /home/<account>/domains/<site>/public_html/app/cron/import.php
+0  * * * *    /usr/bin/php /home/<account>/domains/<site>/public_html/app/cron/sync.php
 15 * * * *    /usr/bin/php /home/<account>/domains/<site>/public_html/app/cron/health_check.php --quiet
 ```
 
@@ -145,8 +150,8 @@ public_html/          document root — dashboard, c.php ingest, oauth callback
 app/lib/              Env, Config, Db, Shard, Crypto, Hash, EventType, …
 app/cron/             import, sync, rollups, identity, attribution, health_check
 config/config.php     structural config (tracked, no secrets)
-db/migrations/        001_core  002_events_shard  003_seed_defaults
-bin/                  migrate.php  keygen.php
+db/migrations/        001_core  002_events_shard  003_seed_defaults  004_import_skipped
+bin/                  migrate.php  keygen.php  selftest.php
 storage/              NOT in git — spool, processed, locks, logs
 secrets/              NOT in git — master.key, salts, geoip-city.mmdb
 .env                  NOT in git — database credentials
