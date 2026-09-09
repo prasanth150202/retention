@@ -37,7 +37,7 @@ The hosting platform cannot run a daemon, cannot run Node, and caps each MySQL d
 |---|---|---|
 | `Shopify_Pixel_V2/collector.js` | Node + Express + better-sqlite3 | **Rewrite in PHP.** No daemons on shared hosting. |
 | `Shopify_Pixel_V2/tracker/tracker.js` | 363-line liquid tracker, `standard`/`firehose` modes | **Reduce scope.** Keep identity + clicks + search; drop pageview duplication and firehose. |
-| `Shopify_Pixel_V2/src/geo.js` | Per-request call to an external IP-geo API | **Replace.** Local MaxMind GeoLite2 `.mmdb`. Network calls per event are unviable. |
+| `Shopify_Pixel_V2/src/geo.js` | Per-request call to an external IP-geo API | **Replace.** Local `.mmdb` file read on disk. Network calls per event are unviable. |
 | `Shopify_Pixel_V2/schema.sql` | SQLite, single-tenant | **Replace.** Multi-tenant MySQL, see §6. |
 | `shopify_key_fetch/shopify_token_exchange.py` | Working OAuth code exchange, HMAC + state verified | **Port to PHP.** Logic is sound; `redirect_uri` and scope list change. |
 | `SHOPIFY_API_GET_CODE/` | Node/Express variant of the same flow | Reference only. |
@@ -501,7 +501,7 @@ Runs under a `flock()` lock so overlapping invocations are impossible.
 
 1. List `spool/*/` files whose hour has closed (never the currently-writing file).
 2. Stream line by line — never `file_get_contents` a whole spool file.
-3. Geo-enrich from a local **MaxMind GeoLite2-City `.mmdb`** using a pure-PHP reader. No network call, no per-event API rate limit, ~10 µs per lookup.
+3. Geo-enrich from a local **`.mmdb` file** using a pure-PHP reader. No network call, no per-event API rate limit, ~10 µs per lookup. Source is **DB-IP City Lite** (CC-BY 4.0) rather than MaxMind GeoLite2: identical format and reader, but a direct download needing no account or licence key, which matters on a host with no shell. The attribution obligation means the Geography tab must link back to db-ip.com.
 4. Intern dimension values (`dim_path`, `dim_campaign`, …) through a request-lifetime memo cache plus `INSERT … ON DUPLICATE KEY UPDATE`.
 5. Batch `INSERT IGNORE` into the writable shard, 500 rows per statement.
 6. Record per-file counts: accepted, duplicate-ignored, malformed.
@@ -666,7 +666,7 @@ bin/
 storage/                   <- NOT in git, created on the server
     spool/  processed/  failed/  locks/  logs/
 secrets/                   <- NOT in git, 0600, backed up OFFLINE
-    master.key  salts/  GeoLite2-City.mmdb
+    master.key  salts/  geoip-city.mmdb
 ```
 
 ### 11.3 The eight tabs
@@ -960,7 +960,7 @@ Phases 0–1 produce live pixel data from one store. Phase 3 is where revenue an
 | 4 | Only two indexes on `events` | Dashboard reads rollups only. **Revisit if journey replay is ever added.** |
 | 5 | Spool to file, import by cron | Ingest survives MySQL being unavailable; avoids connection limits |
 | 6 | One spool file per tenant per hour | Per-request files would breach the inode limit |
-| 7 | Local GeoLite2 over an IP-geo API | Per-event network calls are unviable |
+| 7 | Local .mmdb (DB-IP City Lite) over an IP-geo API | Per-event network calls are unviable; DB-IP needs no account, unlike MaxMind |
 | 8 | Both pixel and Liquid feeds | Neither alone covers both checkout and identity |
 | 9 | Liquid limited to identity + clicks + search | Scroll/firehose would halve shard lifetime for low value |
 | 10 | Hourly polling, no webhooks | User decision. Webhooks remain an additive change. |

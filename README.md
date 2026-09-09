@@ -91,7 +91,9 @@ If a shard database is missing, the runner prints the exact name to create in hP
 
 ### 6. Geo database
 
-Download `GeoLite2-City.mmdb` from MaxMind (free account) and place it in `secrets/`. Required before the first import run; not needed to migrate.
+Press **Step 5** on the setup page. It downloads DB-IP City Lite (~60 MB, MMDB) directly to the server — no account, no licence key, nothing to upload. Chosen over MaxMind GeoLite2 for exactly that reason; the format and reader are identical.
+
+Licensed CC-BY 4.0, so the Geography tab must carry an "IP Geolocation by DB-IP" link back to db-ip.com. Required before the first import runs, not before migrating.
 
 ---
 
@@ -107,7 +109,7 @@ config/config.php     structural config (tracked, no secrets)
 db/migrations/        001_core  002_events_shard  003_seed_defaults
 bin/                  migrate.php  keygen.php
 storage/              NOT in git — spool, processed, locks, logs
-secrets/              NOT in git — master.key, salts, GeoLite2-City.mmdb
+secrets/              NOT in git — master.key, salts, geoip-city.mmdb
 .env                  NOT in git — database credentials
 ```
 

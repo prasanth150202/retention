@@ -105,4 +105,4 @@ echo "Wrote secrets/master.key (32 random bytes, base64, mode 0600)\n\n";
 echo "NEXT:\n";
 echo "  1. Back this file up OFFLINE. It is not in git and cannot be recovered.\n";
 echo "  2. Confirm secrets/ is above public_html and not web-reachable.\n";
-echo "  3. Place GeoLite2-City.mmdb in secrets/ before the first import run.\n";
+echo "  3. Fetch the geo database (setup page, Step 5) before the first import.\n";

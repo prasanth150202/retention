@@ -100,7 +100,7 @@ return [
             'locks'     => $storage . '/locks',
             'logs'      => $storage . '/logs',
             'secrets'   => $secrets,
-            'geolite'   => $secrets . '/GeoLite2-City.mmdb',
+            'geoip'     => $secrets . '/geoip-city.mmdb',
         ];
     })(),
 

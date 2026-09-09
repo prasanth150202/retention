@@ -173,6 +173,113 @@ if ($action !== '' && $_SERVER['REQUEST_METHOD'] === 'POST') {
                     . 'git and cannot be recovered. Losing it means re-onboarding every store.'];
                 break;
 
+            case 'geoip':
+                // DB-IP City Lite rather than MaxMind GeoLite2: same MMDB
+                // format and same reader, but a direct download with no
+                // account, no licence key and no sales funnel to navigate.
+                //
+                // Licensed CC-BY 4.0, which obliges us to credit DB-IP on any
+                // page that displays results from it. The Geography tab must
+                // carry "IP Geolocation by DB-IP" linking to https://db-ip.com.
+                $dest = Config::get('paths.geoip');
+                $dir  = dirname($dest);
+
+                if (!is_dir($dir) && !@mkdir($dir, 0700, true) && !is_dir($dir)) {
+                    throw new RuntimeException("Run Step 2 first — {$dir} does not exist.");
+                }
+                if (!extension_loaded('curl')) {
+                    throw new RuntimeException('The curl extension is not loaded.');
+                }
+
+                @set_time_limit(600);
+
+                // Published monthly. Early in a month the new file may not be
+                // out yet, so fall back to the previous one.
+                $urls = [];
+                foreach ([0, 1, 2] as $back) {
+                    $m = gmdate('Y-m', strtotime("-{$back} month"));
+                    $urls[] = "https://download.db-ip.com/free/dbip-city-lite-{$m}.mmdb.gz";
+                }
+
+                $tmpGz    = $dest . '.download.gz';
+                $chosen   = null;
+                $lastErr  = '';
+
+                foreach ($urls as $url) {
+                    $fh = @fopen($tmpGz, 'wb');
+                    if ($fh === false) {
+                        throw new RuntimeException("Cannot write to {$dir}. Check permissions.");
+                    }
+                    $ch = curl_init($url);
+                    curl_setopt_array($ch, [
+                        CURLOPT_FILE           => $fh,
+                        CURLOPT_FOLLOWLOCATION => true,
+                        CURLOPT_TIMEOUT        => 540,
+                        CURLOPT_CONNECTTIMEOUT => 20,
+                        CURLOPT_FAILONERROR    => true,
+                    ]);
+                    $ok   = curl_exec($ch);
+                    $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                    $err  = curl_error($ch);
+                    curl_close($ch);
+                    fclose($fh);
+
+                    if ($ok && $code === 200 && filesize($tmpGz) > 1_000_000) {
+                        $chosen = $url;
+                        break;
+                    }
+                    $lastErr = $err !== '' ? $err : "HTTP {$code}";
+                    @unlink($tmpGz);
+                }
+
+                if ($chosen === null) {
+                    throw new RuntimeException(
+                        'Could not download the geo database (' . htmlspecialchars($lastErr) . '). '
+                        . 'If outbound HTTP is blocked, download it yourself from '
+                        . 'https://db-ip.com/db/download/ip-to-city-lite, unzip it, and upload '
+                        . 'the .mmdb as <code>' . htmlspecialchars(basename($dest)) . '</code>.'
+                    );
+                }
+
+                // Decompress in chunks; the file is ~60 MB packed and larger
+                // unpacked, so it must never be held in memory whole.
+                $in  = @gzopen($tmpGz, 'rb');
+                $out = @fopen($dest . '.tmp', 'wb');
+                if ($in === false || $out === false) {
+                    @unlink($tmpGz);
+                    throw new RuntimeException('Downloaded the file but could not unpack it.');
+                }
+                $bytes = 0;
+                while (!gzeof($in)) {
+                    $chunk = gzread($in, 1 << 18);
+                    if ($chunk === false) {
+                        break;
+                    }
+                    $bytes += (int) fwrite($out, $chunk);
+                }
+                gzclose($in);
+                fclose($out);
+                @unlink($tmpGz);
+
+                if ($bytes < 1_000_000) {
+                    @unlink($dest . '.tmp');
+                    throw new RuntimeException('Unpacked file looks truncated. Try again.');
+                }
+
+                // Atomic-ish swap so a half-written file is never in place.
+                if (!@rename($dest . '.tmp', $dest)) {
+                    @unlink($dest . '.tmp');
+                    throw new RuntimeException("Could not move the database into {$dest}.");
+                }
+                @chmod($dest, 0600);
+
+                $results[] = ['ok', 'Geo database',
+                    'Downloaded and unpacked — ' . number_format($bytes / 1048576, 1) . ' MB.<br>'
+                    . '<small>Source: ' . htmlspecialchars(basename($chosen))
+                    . ' (DB-IP City Lite, CC-BY 4.0). The Geography tab must credit '
+                    . '<a href="https://db-ip.com">DB-IP</a>.</small>'];
+                break;
+
             case 'migrate':
             case 'migrate_dry':
                 $r = (new Migrator())->run($action === 'migrate_dry');
@@ -304,10 +411,12 @@ $checks[] = [
     is_file($keyFile) ? true : 'pending',
 ];
 
-$geo = Config::get('paths.geolite');
+$geo = Config::get('paths.geoip');
 $checks[] = [
-    'GeoLite2 database',
-    is_file($geo) ? 'present' : 'not uploaded — only needed before the first import',
+    'Geo database',
+    is_file($geo)
+        ? 'present — ' . number_format(filesize($geo) / 1048576, 1) . ' MB'
+        : 'not downloaded — press Step 5 below (only needed before the first import)',
     is_file($geo) ? true : 'pending',
 ];
 
@@ -563,14 +672,21 @@ the encryption key must land somewhere a deploy cannot delete.</p>
   want to see what it would do without writing anything.<br>
   <button name="action" value="migrate_dry">Preview migrations</button>
   <button name="action" value="migrate">Apply migrations</button></p>
+
+  <p><strong>Step 5.</strong> Downloads the IP-to-location database (about 60&nbsp;MB)
+  straight to the server — nothing to sign up for and nothing to upload. It
+  turns visitor IP addresses into “Chennai, Tamil Nadu” for the Geography tab.
+  The IP itself is never stored. Not needed until the first import runs, and
+  it may take a minute.<br>
+  <button name="action" value="geoip">Download geo database</button></p>
 </form>
 
 <h2>When you are finished</h2>
 <ol>
   <li>Download <code>secrets/master.key</code> and store it offline. It is not in
       git; losing it means re-onboarding every connected store.</li>
-  <li>Upload <code>GeoLite2-City.mmdb</code> into <code>secrets/</code> — needed
-      before the first import, not before now.</li>
+  <li>Run Step 5 to fetch the geo database, if you have not already. Only
+      needed before the first import.</li>
   <li>Remove <code>SETUP_TOKEN</code> from <code>.env</code>. This page then
       refuses to do anything at all.</li>
 </ol>
