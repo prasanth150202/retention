@@ -1,0 +1,106 @@
+# =====================================================================
+# Project Odysseus — repository root hardening
+#
+# THIS IS A SAFETY NET, NOT THE INTENDED LAYOUT.
+#
+# The correct deployment points the document root at public_html/ INSIDE
+# this repository, so app/, config/, db/, bin/, storage/ and secrets/ are
+# simply not reachable over HTTP. See TECHNICAL_PLAN.md section 4.2.
+#
+# In practice the repository sometimes gets deployed directly into
+# public_html, which exposes everything. This file makes that misdeployment
+# safe rather than catastrophic: it denies everything except the handful of
+# real entry points.
+#
+# Keep it even after the document root is fixed. It costs nothing and it is
+# the difference between "wrong directory" and "database credentials on the
+# public internet".
+#
+# Hostinger runs LiteSpeed, which honours .htaccess.
+# =====================================================================
+
+
+# ---------------------------------------------------------------------
+# 1. Dotfiles — .env above all else.
+#
+# Hostinger blocks these by default, but relying on a host default to keep
+# database credentials private is not a control, it is a coincidence.
+# ---------------------------------------------------------------------
+<FilesMatch "^\.">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>
+
+RedirectMatch 404 (?i)^/\.
+
+
+# ---------------------------------------------------------------------
+# 2. Private directories.
+#
+# 404 rather than 403: a 403 confirms the path exists, which tells someone
+# probing the site exactly how it is laid out.
+# ---------------------------------------------------------------------
+RedirectMatch 404 (?i)^/(app|config|db|bin|storage|secrets|vendor|node_modules)(/|$)
+
+
+# ---------------------------------------------------------------------
+# 3. File types that should never be served.
+#
+# .sql exposes the full schema; .md exposes the technical plan; .key and
+# .mmdb are secrets and licensed data respectively.
+# ---------------------------------------------------------------------
+<FilesMatch "\.(env|sql|md|markdown|key|pem|mmdb|ini|log|bak|dist|lock|yml|yaml|sh|py)$">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>
+
+
+# ---------------------------------------------------------------------
+# 4. No directory listings.
+# ---------------------------------------------------------------------
+Options -Indexes
+
+
+# ---------------------------------------------------------------------
+# 5. Send the site to the real application.
+#
+# public_html/ is where the entry points live. When the document root is
+# configured correctly this rule never fires, because this file is above
+# the document root and is never consulted.
+# ---------------------------------------------------------------------
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # Already inside public_html - leave it alone.
+    RewriteCond %{REQUEST_URI} ^/public_html/ [OR]
+    RewriteCond %{REQUEST_URI} ^/\.well-known/
+    RewriteRule ^ - [L]
+
+    # Serve existing files in public_html without exposing the prefix.
+    RewriteCond %{DOCUMENT_ROOT}/public_html%{REQUEST_URI} -f
+    RewriteRule ^(.*)$ /public_html/$1 [L]
+
+    RewriteCond %{DOCUMENT_ROOT}/public_html/index.php -f
+    RewriteCond %{REQUEST_URI} ^/$
+    RewriteRule ^ /public_html/index.php [L]
+</IfModule>
+
+
+# ---------------------------------------------------------------------
+# 6. Baseline response headers.
+# ---------------------------------------------------------------------
+<IfModule mod_headers.c>
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set X-Frame-Options "SAMEORIGIN"
+    Header always set Referrer-Policy "strict-origin-when-cross-origin"
+</IfModule>

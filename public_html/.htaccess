@@ -1,0 +1,41 @@
+# =====================================================================
+# Project Odysseus — public document root
+#
+# This directory is the ONLY one that should be web-reachable. Everything
+# else in the repository (app/, config/, db/, bin/, storage/, secrets/,
+# .env) lives above it and is served by nothing.
+#
+# The rules below are belt-and-braces for the case where the document root
+# has been pointed at the repository root instead — see the root .htaccess.
+# =====================================================================
+
+Options -Indexes
+
+<FilesMatch "^\.">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>
+
+<IfModule mod_headers.c>
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set X-Frame-Options "SAMEORIGIN"
+    Header always set Referrer-Policy "strict-origin-when-cross-origin"
+
+    # The ingest endpoint is called cross-origin from client storefronts via
+    # sendBeacon. It must never be cached, and it returns no body worth
+    # caching anyway.
+    <FilesMatch "^c\.php$">
+        Header always set Cache-Control "no-store"
+    </FilesMatch>
+
+    # Setup is an administrative page; keep it out of caches and indexes.
+    <FilesMatch "^setup\.php$">
+        Header always set Cache-Control "no-store"
+        Header always set X-Robots-Tag "noindex, nofollow"
+    </FilesMatch>
+</IfModule>
