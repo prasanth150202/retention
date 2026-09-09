@@ -25,6 +25,9 @@ require_once __DIR__ . '/Hash.php';
 require_once __DIR__ . '/EventType.php';
 require_once __DIR__ . '/Db.php';
 require_once __DIR__ . '/Shard.php';
+require_once __DIR__ . '/Job.php';
+require_once __DIR__ . '/Dim.php';
+require_once __DIR__ . '/GeoIp.php';
 require_once __DIR__ . '/Migrator.php';
 
 function odysseus_boot(?string $envFile = null): void

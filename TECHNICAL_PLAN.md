@@ -501,7 +501,7 @@ Runs under a `flock()` lock so overlapping invocations are impossible.
 
 1. List `spool/*/` files whose hour has closed (never the currently-writing file).
 2. Stream line by line — never `file_get_contents` a whole spool file.
-3. Geo-enrich from a local **`.mmdb` file** using a pure-PHP reader. No network call, no per-event API rate limit, ~10 µs per lookup. Source is **DB-IP City Lite** (CC-BY 4.0) rather than MaxMind GeoLite2: identical format and reader, but a direct download needing no account or licence key, which matters on a host with no shell. The attribution obligation means the Geography tab must link back to db-ip.com.
+3. Geo-enrich from a local **`.mmdb` file** using a pure-PHP reader. No network call and no per-event API rate limit. **Measured at 0.46 ms per distinct lookup** with the hand-written PHP reader in `app/lib/GeoIp.php` — an earlier draft claimed ~10 µs, which is what a memory-mapped C implementation achieves, not a PHP one doing a file seek per tree level. It is still comfortably fast enough: repeat visitors share an IP and results are cached per process, so the real per-event cost is far below the worst case measured against 2,000 distinct addresses. Source is **DB-IP City Lite** (CC-BY 4.0) rather than MaxMind GeoLite2: identical format and reader, but a direct download needing no account or licence key, which matters on a host with no shell. The attribution obligation means the Geography tab must link back to db-ip.com.
 4. Intern dimension values (`dim_path`, `dim_campaign`, …) through a request-lifetime memo cache plus `INSERT … ON DUPLICATE KEY UPDATE`.
 5. Batch `INSERT IGNORE` into the writable shard, 500 rows per statement.
 6. Record per-file counts: accepted, duplicate-ignored, malformed.

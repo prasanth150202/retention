@@ -30,12 +30,27 @@ if (!extension_loaded('openssl')) {
 }
 
 $root  = dirname(__DIR__);
-$opts  = getopt('', ['force']);
+$opts  = getopt('', ['force', 'env::']);
 $force = array_key_exists('force', $opts);
 
-$secretsDir = $root . '/secrets';
-$saltsDir   = $secretsDir . '/salts';
-$keyFile    = $secretsDir . '/master.key';
+require_once $root . '/app/lib/bootstrap.php';
+
+try {
+    odysseus_boot(odysseus_env_arg());
+} catch (Throwable $e) {
+    fwrite(STDERR, "ERROR loading configuration:\n  " . $e->getMessage() . "\n");
+    exit(1);
+}
+
+// Read the location from configuration rather than assuming repo/secrets.
+// An earlier version hardcoded that path, which on any server setting
+// SECRETS_PATH wrote the key somewhere the application would never look for
+// it — producing a key that exists and yet cannot decrypt anything.
+$secretsDir = (string) Config::get('paths.secrets');
+$saltsDir   = (string) Config::get('secrets.salt_dir');
+$keyFile    = (string) Config::get('secrets.master_key_file');
+
+echo "Secrets directory: {$secretsDir}\n\n";
 
 foreach ([$secretsDir, $saltsDir] as $dir) {
     if (!is_dir($dir) && !mkdir($dir, 0700, true) && !is_dir($dir)) {
@@ -54,19 +69,9 @@ if (is_file($keyFile) && !$force) {
 
 if (is_file($keyFile) && $force) {
     // Refuse to destroy live tokens. Check the database before overwriting.
-    $configFile = $root . '/config/config.php';
-    if (is_file($root . '/.env') && is_file($configFile)) {
+    if (is_file($root . '/.env')) {
         try {
-            $cfg  = require $configFile;
-            $name = $cfg['db']['core'];
-            $pdo  = new PDO(
-                sprintf('mysql:host=%s;port=%d;dbname=%s;charset=utf8mb4',
-                    $cfg['db']['host'], (int) $cfg['db']['port'], $name),
-                $cfg['db']['user'],
-                $cfg['db']['pass'],
-                [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
-            );
-            $n = (int) $pdo->query(
+            $n = (int) Db::core()->query(
                 'SELECT COUNT(*) FROM tenants WHERE admin_token_enc IS NOT NULL'
             )->fetchColumn();
 
