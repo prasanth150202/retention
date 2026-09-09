@@ -444,7 +444,7 @@ SECRETS_PATH=<?= htmlspecialchars($suggested) ?>/secrets</pre>
     <td><?= $var ?></td>
     <td>
       <?php if ($raw === null): ?>
-        <span class="warn">not set in .env — falling back to a folder inside the repository</span>
+        <span class="warn">not set — using the default, which is the correct location for this server</span>
       <?php else: ?>
         <code><?= htmlspecialchars($raw) ?></code>
       <?php endif; ?>
