@@ -25,14 +25,30 @@ require_once $root . '/app/lib/bootstrap.php';
 // ---------------------------------------------------------------------
 // Bare-minimum failures, before configuration is even loadable.
 // ---------------------------------------------------------------------
+/**
+ * When was this file last deployed?
+ *
+ * Shown on every page, including the ones behind the token gate, so "did my
+ * push actually reach the server" is answerable without logging in anywhere.
+ * A file modification time reveals nothing sensitive.
+ */
+function deployedAt(): string
+{
+    $t = @filemtime(__FILE__);
+    return $t ? gmdate('Y-m-d H:i:s', $t) . ' UTC' : 'unknown';
+}
+
 function fail(string $title, string $body): never
 {
     http_response_code(500);
     echo '<!doctype html><meta charset="utf-8"><title>Odysseus setup</title>';
     echo '<style>body{font:15px/1.6 system-ui,sans-serif;max-width:760px;margin:60px auto;padding:0 24px;color:#111}'
        . 'h1{font-size:20px}code{background:#f4f4f5;padding:2px 6px;border-radius:4px}'
-       . 'pre{background:#f4f4f5;padding:14px;border-radius:6px;overflow:auto}</style>';
+       . 'pre{background:#f4f4f5;padding:14px;border-radius:6px;overflow:auto}'
+       . 'footer{margin-top:40px;font-size:12px;opacity:.6}</style>';
     echo '<h1>' . htmlspecialchars($title) . '</h1>' . $body;
+    echo '<footer>setup.php last deployed: ' . htmlspecialchars(deployedAt())
+       . '<br>If that is older than your last push, the deployment has not run yet.</footer>';
     exit;
 }
 
@@ -334,7 +350,10 @@ $tokenQs = '?token=' . rawurlencode($supplied);
 </style>
 
 <h1>Project Odysseus — setup</h1>
-<p class="sub">One-time setup for hosts without shell access.</p>
+<p class="sub">One-time setup for hosts without shell access.<br>
+<small>This file last deployed: <strong><?= htmlspecialchars(deployedAt()) ?></strong>
+— if that is older than your last push, the deployment has not run yet and you are
+looking at old code.</small></p>
 
 <?php if ($webExposed): ?>
 <div class="box">
