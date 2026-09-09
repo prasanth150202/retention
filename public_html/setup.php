@@ -391,6 +391,68 @@ SECRETS_PATH=<?= htmlspecialchars($suggested) ?>/secrets</pre>
   Amber means “not done yet”, not “broken”. The buttons below create these.
 </p>
 
+<h2>Where things are on disk</h2>
+<p class="sub" style="font-size:13px">
+  Absolute paths as PHP resolved them. If a folder looks missing in File Manager,
+  it is almost always because it was created somewhere other than where you are
+  looking — navigate to the exact path below.
+</p>
+<table>
+  <?php
+  $keyPath = Config::get('secrets.master_key_file');
+  $rows = [
+      'Repository root'   => $root,
+      'Document root'     => (string) ($_SERVER['DOCUMENT_ROOT'] ?? 'unknown'),
+      'This file'         => __FILE__,
+      'Storage path'      => $storageDir,
+      'Secrets path'      => $secretsDir,
+      'Encryption key'    => $keyPath,
+  ];
+  foreach ($rows as $label => $path):
+      $real   = is_dir($path) || is_file($path) ? realpath($path) : false;
+      $exists = $real !== false;
+  ?>
+  <tr>
+    <td><?= htmlspecialchars($label) ?></td>
+    <td>
+      <code><?= htmlspecialchars($exists ? $real : $path) ?></code><br>
+      <small class="<?= $exists ? 'ok' : 'warn' ?>">
+        <?php if ($exists && is_file($path)): ?>
+          exists — <?= number_format(filesize($path)) ?> bytes
+        <?php elseif ($exists): ?>
+          exists<?= is_writable($path) ? ', writable' : ', NOT writable' ?>
+        <?php else: ?>
+          does not exist yet
+        <?php endif; ?>
+      </small>
+    </td>
+  </tr>
+  <?php endforeach; ?>
+</table>
+
+<?php
+// Listing the secrets directory answers "the folder is not visible" directly:
+// either the files are here, or they were written somewhere else entirely.
+if (is_dir($secretsDir)):
+    $entries = array_values(array_diff(scandir($secretsDir) ?: [], ['.', '..']));
+?>
+<p><strong>Contents of <code><?= htmlspecialchars((string) realpath($secretsDir)) ?></code>:</strong>
+<?php if ($entries === []): ?>
+  <em>empty</em> — the folder exists but nothing has been written into it yet.
+<?php else: ?>
+  <?= htmlspecialchars(implode(', ', $entries)) ?>
+<?php endif; ?>
+</p>
+<?php endif; ?>
+
+<?php if (is_dir($storageDir)):
+    $entries = array_values(array_diff(scandir($storageDir) ?: [], ['.', '..']));
+?>
+<p><strong>Contents of <code><?= htmlspecialchars((string) realpath($storageDir)) ?></code>:</strong>
+<?= $entries === [] ? '<em>empty</em>' : htmlspecialchars(implode(', ', $entries)) ?>
+</p>
+<?php endif; ?>
+
 <h2>Actions — run in order</h2>
 
 <p><strong>Step 1.</strong> Put the two <code>STORAGE_PATH</code> /
