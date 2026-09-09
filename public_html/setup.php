@@ -222,6 +222,16 @@ $secretsDir = Config::get('paths.secrets');
 $inRepo     = str_starts_with($norm($storageDir), $norm($root))
            || str_starts_with($norm($secretsDir), $norm($root));
 
+// The genuinely dangerous placement: runtime data under a document root is
+// downloadable over HTTP. master.key in particular would be fetchable by
+// anyone who guessed the URL. Checked separately from $inRepo because once
+// the document root is corrected the two stop being the same directory.
+$docRoot   = $norm((string) ($_SERVER['DOCUMENT_ROOT'] ?? ''));
+$webExposed = $docRoot !== '' && (
+       str_starts_with($norm($storageDir), $docRoot)
+    || str_starts_with($norm($secretsDir), $docRoot)
+);
+
 // Suggest a location that is outside the repository (so a deploy cannot
 // delete it), above the document root (so it is not web-reachable), and
 // inside open_basedir if the host sets one.
@@ -325,6 +335,19 @@ $tokenQs = '?token=' . rawurlencode($supplied);
 
 <h1>Project Odysseus — setup</h1>
 <p class="sub">One-time setup for hosts without shell access.</p>
+
+<?php if ($webExposed): ?>
+<div class="box">
+  <strong>Runtime data is inside the document root — it is downloadable over HTTP.</strong>
+  <p><code>master.key</code> decrypts every stored Shopify token. If it sits under
+  the document root, anyone who guesses the URL can fetch it.</p>
+  <p>Move it above the document root now:</p>
+  <pre>STORAGE_PATH=<?= htmlspecialchars($suggested) ?>/storage
+SECRETS_PATH=<?= htmlspecialchars($suggested) ?>/secrets</pre>
+  <p>Then press <strong>Create runtime directories</strong> and
+  <strong>Generate encryption key</strong> again, and delete the old folder.</p>
+</div>
+<?php endif; ?>
 
 <?php if ($inRepo): ?>
 <div class="box">
