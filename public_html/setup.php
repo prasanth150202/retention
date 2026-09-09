@@ -414,6 +414,49 @@ SECRETS_PATH=<?= htmlspecialchars($suggested) ?>/secrets</pre>
   Amber means “not done yet”, not “broken”. The buttons below create these.
 </p>
 
+<h2>What .env actually says</h2>
+<p class="sub" style="font-size:13px">
+  If a folder keeps appearing in the wrong place, the cause is almost always
+  here: the edit went to a different file, or was not saved. These are the raw
+  values this page just read.
+</p>
+<table>
+  <?php
+  $envPath = $root . '/.env';
+  ?>
+  <tr>
+    <td>File read</td>
+    <td>
+      <code><?= htmlspecialchars($envPath) ?></code><br>
+      <small class="<?= is_file($envPath) ? 'ok' : 'bad' ?>">
+        <?php if (is_file($envPath)): ?>
+          last saved <?= htmlspecialchars(date('Y-m-d H:i:s', (int) filemtime($envPath))) ?>
+          (server time) — <?= number_format((int) filesize($envPath)) ?> bytes
+        <?php else: ?>
+          NOT FOUND — this is the only .env this page reads
+        <?php endif; ?>
+      </small>
+    </td>
+  </tr>
+  <?php foreach (['STORAGE_PATH', 'SECRETS_PATH'] as $var):
+      $raw = Env::get($var); ?>
+  <tr>
+    <td><?= $var ?></td>
+    <td>
+      <?php if ($raw === null): ?>
+        <span class="warn">not set in .env — falling back to a folder inside the repository</span>
+      <?php else: ?>
+        <code><?= htmlspecialchars($raw) ?></code>
+      <?php endif; ?>
+    </td>
+  </tr>
+  <?php endforeach; ?>
+</table>
+<p class="sub" style="font-size:13px">
+  Those two values are used verbatim. Whatever they say is where the folders get
+  created — so if they are not what you typed, the edit did not reach this file.
+</p>
+
 <h2>Where things are on disk</h2>
 <p class="sub" style="font-size:13px">
   Absolute paths as PHP resolved them. If a folder looks missing in File Manager,
@@ -427,6 +470,7 @@ SECRETS_PATH=<?= htmlspecialchars($suggested) ?>/secrets</pre>
       'Repository root'   => $root,
       'Document root'     => (string) ($_SERVER['DOCUMENT_ROOT'] ?? 'unknown'),
       'This file'         => __FILE__,
+      '.env being used'   => $root . '/.env',
       'Storage path'      => $storageDir,
       'Secrets path'      => $secretsDir,
       'Encryption key'    => $keyPath,
