@@ -94,7 +94,8 @@ switch ($page) {
 
         $stmt = Db::core()->prepare(
             'SELECT tenant_id, shop_domain, custom_domain, display_name, write_key,
-                    status, installed_at, currency, iana_timezone
+                    status, installed_at, currency, iana_timezone,
+                    admin_token_enc, token_scopes
                FROM tenants WHERE tenant_id = ?'
         );
         $stmt->execute([$id]);
@@ -111,6 +112,51 @@ switch ($page) {
         render($tenant['display_name'], 'stores', static function () use ($tenant, $stats): void {
             require dirname(__DIR__) . '/app/views/store.php';
         });
+        break;
+
+    case 'connect':
+        Auth::require();
+        require_once $root . '/app/lib/ShopifyOAuth.php';
+
+        $id   = (int) ($_GET['id'] ?? 0);
+        $stmt = Db::core()->prepare(
+            'SELECT tenant_id, shop_domain, display_name, token_scopes,
+                    admin_token_enc IS NOT NULL AS connected
+               FROM tenants WHERE tenant_id = ?'
+        );
+        $stmt->execute([$id]);
+        $tenant = $stmt->fetch();
+
+        if (!$tenant) {
+            header('Location: /?p=stores');
+            exit;
+        }
+
+        $installUrl = null;
+
+        if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+            Auth::csrfCheck();
+            try {
+                if (!Crypto::available()) {
+                    throw new RuntimeException(
+                        'No encryption key. Generate one from /setup.php before connecting a '
+                        . 'store — the Shopify token cannot be stored safely without it.'
+                    );
+                }
+                $installUrl = ShopifyOAuth::beginInstall(
+                    (string) $tenant['shop_domain'],
+                    trim((string) ($_POST['client_id'] ?? '')),
+                    trim((string) ($_POST['client_secret'] ?? ''))
+                );
+            } catch (Throwable $e) {
+                $flash = ['err', $e->getMessage()];
+            }
+        }
+
+        render('Connect ' . $tenant['display_name'], 'stores',
+            static function () use ($tenant, $installUrl, $flash): void {
+                require dirname(__DIR__) . '/app/views/connect.php';
+            });
         break;
 
     case 'stores':

@@ -297,6 +297,74 @@ check('funnel steps ordered', function () {
 });
 
 // -----------------------------------------------------------------------
+echo "\nShopify OAuth\n";
+
+/** Build a callback query string signed the way Shopify signs one. */
+$signed = static function (array $params, string $secret): string {
+    ksort($params);
+    $parts = [];
+    foreach ($params as $k => $v) {
+        $parts[] = rawurlencode((string) $k) . '=' . rawurlencode((string) $v);
+    }
+    $msg = implode('&', $parts);
+    return $msg . '&hmac=' . hash_hmac('sha256', $msg, $secret);
+};
+
+$oauthSecret = 'shpss_test_secret_abcdef123456';
+$oauthParams = [
+    'code' => 'authcode123', 'shop' => 'demo.myshopify.com',
+    'state' => 'statenonce', 'timestamp' => '1757400000',
+];
+$signedQs = $signed($oauthParams, $oauthSecret);
+
+check('valid callback signature accepted', function () use ($signedQs, $oauthSecret) {
+    assertTrue(ShopifyOAuth::verifyHmac($signedQs, $oauthSecret), 'a genuine callback was rejected');
+    return 'verified';
+});
+check('forged callback rejected', function () use ($signedQs) {
+    assertTrue(!ShopifyOAuth::verifyHmac($signedQs, 'wrong_secret'), 'wrong secret was accepted');
+    return 'correctly refused';
+});
+check('tampered shop rejected', function () use ($signedQs, $oauthSecret) {
+    // The attack this exists to stop: pointing a valid install at another shop.
+    $evil = str_replace('demo.myshopify', 'evil.myshopify', $signedQs);
+    assertTrue(!ShopifyOAuth::verifyHmac($evil, $oauthSecret), 'a substituted shop was accepted');
+    return 'correctly refused';
+});
+check('appended parameter rejected', function () use ($signedQs, $oauthSecret) {
+    assertTrue(!ShopifyOAuth::verifyHmac($signedQs . '&extra=1', $oauthSecret), 'extra param accepted');
+    return 'correctly refused';
+});
+check('legacy signature param excluded', function () use ($signedQs, $oauthSecret) {
+    // Shopify excludes 'signature' from the digest; including it breaks real callbacks.
+    assertTrue(ShopifyOAuth::verifyHmac($signedQs . '&signature=legacy', $oauthSecret), 'failed');
+    return 'ignored, as Shopify does';
+});
+check('percent-encoded values verify', function () use ($signed, $oauthParams, $oauthSecret) {
+    $qs = $signed($oauthParams + ['note' => 'a b&c=d'], $oauthSecret);
+    assertTrue(ShopifyOAuth::verifyHmac($qs, $oauthSecret), 'encoding round-trip lost bytes');
+    return 'verified';
+});
+check('shop domain normalised', function () {
+    assertTrue(ShopifyOAuth::normaliseShop('demo') === 'demo.myshopify.com', 'bare name');
+    assertTrue(ShopifyOAuth::normaliseShop('https://DEMO.myshopify.com/') === 'demo.myshopify.com', 'url form');
+    return 'demo.myshopify.com';
+});
+check('non-Shopify domain refused', fn() => assertThrows(
+    fn() => ShopifyOAuth::normaliseShop('evil.com'),
+    'an arbitrary domain was accepted as a shop'
+));
+check('missing read_all_orders detected', function () {
+    // Silent otherwise: the install succeeds, the API returns 60 days, and
+    // every cohort chart is empty for reasons nobody traces back to here.
+    $p = ShopifyOAuth::verifyScopes('read_orders,read_customers,read_products');
+    assertTrue($p['history_limited'] === true, 'not flagged');
+    $f = ShopifyOAuth::verifyScopes(implode(',', ShopifyOAuth::SCOPES));
+    assertTrue($f['history_limited'] === false && $f['missing'] === [], 'false positive on a full grant');
+    return 'flagged when absent, quiet when granted';
+});
+
+// -----------------------------------------------------------------
 echo "\nStorage headroom\n";
 
 check('shard size measured', function () {

@@ -131,10 +131,29 @@ $arrived = $stats['events'] > 0 || $stats['spool'] > 0;
     </tr>
     <tr>
       <td><strong>Shopify API</strong></td>
-      <td><span class="muted">not connected</span>
-        <div class="hint">Orders, customers and abandoned checkouts arrive once the Admin API
-        is connected. Until then the funnel is complete but revenue is not, because purchase
-        totals come from the API rather than the browser.</div>
+      <td>
+        <?php if (!empty($tenant['admin_token_enc'])): ?>
+          <span class="pill live">connected</span>
+          <?php if ($tenant['token_scopes'] ?? ''):
+              $sc = ShopifyOAuth::verifyScopes((string) $tenant['token_scopes']);
+              if ($sc['history_limited']): ?>
+            <div class="hint" style="color:var(--warn)">
+              <strong>read_all_orders was not granted.</strong> Only the last 60 days of orders
+              are available, so retention and cohort figures will stay empty. Request the scope
+              in the Partner Dashboard and reconnect.
+            </div>
+          <?php endif; endif; ?>
+          <div class="hint"><a href="/?p=connect&amp;id=<?= (int) $tenant['tenant_id'] ?>">Reconnect</a>
+          — needed after adding a scope.</div>
+        <?php else: ?>
+          <span class="muted">not connected</span>
+          <div class="hint">Orders, customers and abandoned checkouts arrive once the Admin API
+          is connected. Until then the funnel is complete but revenue is not, because purchase
+          totals come from the API rather than the browser.</div>
+          <p style="margin:10px 0 0">
+            <a class="btn" href="/?p=connect&amp;id=<?= (int) $tenant['tenant_id'] ?>">Connect the Shopify API</a>
+          </p>
+        <?php endif; ?>
       </td>
     </tr>
   </table>
