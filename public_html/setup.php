@@ -189,6 +189,26 @@ $checks[] = [
     !$exposed,
 ];
 
+// Runtime data inside the repository is destroyed by any deploy step that
+// runs `git clean`. The master key and unimported pixel events are both
+// unrecoverable, so this is checked prominently rather than documented.
+$norm       = static fn(string $p): string => rtrim(str_replace('\\', '/', $p), '/');
+$storageDir = Config::get('paths.storage');
+$secretsDir = Config::get('paths.secrets');
+$inRepo     = str_starts_with($norm($storageDir), $norm($root))
+           || str_starts_with($norm($secretsDir), $norm($root));
+
+$checks[] = [
+    'Storage path',
+    $storageDir . ($inRepo ? '  — INSIDE the repository' : ''),
+    !$inRepo,
+];
+$checks[] = [
+    'Secrets path',
+    $secretsDir . ($inRepo ? '  — INSIDE the repository' : ''),
+    !$inRepo,
+];
+
 $keyFile = Config::get('secrets.master_key_file');
 $checks[] = ['Encryption key', is_file($keyFile) ? 'present' : 'not generated yet', is_file($keyFile)];
 
@@ -238,6 +258,26 @@ $tokenQs = '?token=' . rawurlencode($supplied);
 
 <h1>Project Odysseus — setup</h1>
 <p class="sub">One-time setup for hosts without shell access.</p>
+
+<?php if ($inRepo): ?>
+<div class="box">
+  <strong>Runtime data is stored inside the repository.</strong>
+  <p>If your deployment runs <code>git clean</code>, these files are deleted on
+  every deploy:</p>
+  <ul>
+    <li><code>master.key</code> — every stored Shopify token becomes permanently
+        unreadable and every store must be re-onboarded.</li>
+    <li><code>spool/</code> — pixel events not yet imported. Orders can be
+        re-fetched from Shopify; <strong>pixel events cannot be recovered from
+        anywhere</strong>.</li>
+  </ul>
+  <p>Create a folder outside the repository, then set both in <code>.env</code>:</p>
+  <pre>STORAGE_PATH=/home/&lt;account&gt;/odysseus-data/storage
+SECRETS_PATH=/home/&lt;account&gt;/odysseus-data/secrets</pre>
+  <p>Do this <em>before</em> generating the encryption key, so the key is written
+  somewhere a deploy cannot reach.</p>
+</div>
+<?php endif; ?>
 
 <?php if ($exposed): ?>
 <div class="box">
