@@ -262,14 +262,28 @@ $checks[] = [
     !$inRepo,
 ];
 
-$keyFile = Config::get('secrets.master_key_file');
-$checks[] = ['Encryption key', is_file($keyFile) ? 'present' : 'not generated yet', is_file($keyFile)];
-
+// These three are "not done yet", not "broken". Showing them red made it
+// look like something had failed when in fact no button had been pressed.
 $spool = Config::get('paths.spool');
-$checks[] = ['Runtime directories', is_dir($spool) ? 'present' : 'not created yet', is_dir($spool)];
+$checks[] = [
+    'Runtime directories',
+    is_dir($spool) ? 'present' : 'not created yet — press Step 2 below',
+    is_dir($spool) ? true : 'pending',
+];
+
+$keyFile = Config::get('secrets.master_key_file');
+$checks[] = [
+    'Encryption key',
+    is_file($keyFile) ? 'present' : 'not generated yet — press Step 3 below',
+    is_file($keyFile) ? true : 'pending',
+];
 
 $geo = Config::get('paths.geolite');
-$checks[] = ['GeoLite2 database', is_file($geo) ? 'present' : 'not uploaded (needed before ingest)', is_file($geo)];
+$checks[] = [
+    'GeoLite2 database',
+    is_file($geo) ? 'present' : 'not uploaded — only needed before the first import',
+    is_file($geo) ? true : 'pending',
+];
 
 try {
     $ver = Db::core()->query('SELECT VERSION()')->fetchColumn();
@@ -367,18 +381,40 @@ SECRETS_PATH=<?= htmlspecialchars($suggested) ?>/secrets</pre>
   <?php foreach ($checks as [$label, $value, $good]): ?>
   <tr>
     <td><?= htmlspecialchars($label) ?></td>
-    <td class="<?= $good ? 'ok' : 'bad' ?>"><?= htmlspecialchars($value) ?></td>
+    <td class="<?= $good === true ? 'ok' : ($good === 'pending' ? 'warn' : 'bad') ?>">
+      <?= htmlspecialchars($value) ?>
+    </td>
   </tr>
   <?php endforeach; ?>
 </table>
+<p class="sub" style="font-size:13px">
+  Amber means “not done yet”, not “broken”. The buttons below create these.
+</p>
 
-<h2>Actions</h2>
+<h2>Actions — run in order</h2>
+
+<p><strong>Step 1.</strong> Put the two <code>STORAGE_PATH</code> /
+<code>SECRETS_PATH</code> lines shown above into <code>.env</code>, then reload
+this page. Do this first: it decides <em>where</em> the next two steps write, and
+the encryption key must land somewhere a deploy cannot delete.</p>
+
 <form method="post" action="setup.php<?= htmlspecialchars($tokenQs) ?>">
   <input type="hidden" name="token" value="<?= htmlspecialchars($supplied) ?>">
-  <button name="action" value="dirs">Create runtime directories</button>
-  <button name="action" value="keygen">Generate encryption key</button>
+
+  <p><strong>Step 2.</strong> Creates <code>storage/</code> and
+  <code>secrets/</code> and everything under them, parents included. Neither
+  folder exists until you press this.<br>
+  <button name="action" value="dirs">Create runtime directories</button></p>
+
+  <p><strong>Step 3.</strong> Writes <code>master.key</code> into
+  <code>secrets/</code>. Refuses to overwrite an existing key, because
+  replacing it makes every stored Shopify token permanently unreadable.<br>
+  <button name="action" value="keygen">Generate encryption key</button></p>
+
+  <p><strong>Step 4.</strong> Applies the database schema. Preview first if you
+  want to see what it would do without writing anything.<br>
   <button name="action" value="migrate_dry">Preview migrations</button>
-  <button name="action" value="migrate">Apply migrations</button>
+  <button name="action" value="migrate">Apply migrations</button></p>
 </form>
 
 <h2>When you are finished</h2>
