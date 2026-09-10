@@ -50,7 +50,9 @@ INSERT INTO channel_rules (tenant_id, priority, match_field, match_op, match_val
   -- 50-59: click identifiers. UTMs stripped but the click id survived —
   -- this is the "recoverable" bucket in the unattributed diagnostics.
   (0, 50, 'has_gclid',    'exists',   NULL,         'Google Ads',       1),
-  (0, 51, 'has_fbclid',   'exists',   NULL,         'Meta Ads',         1),
+  -- fbclid is NOT an ads marker: Facebook adds it to organic post,
+  -- Messenger and group links too. gclid above genuinely is one.
+  (0, 51, 'has_fbclid',   'exists',   NULL,         'Facebook',         1),
 
   -- 60-89: referrer host, lowest confidence
   (0, 60, 'referrer_host','contains', 'instagram',  'Instagram',        1),

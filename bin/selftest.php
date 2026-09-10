@@ -877,6 +877,7 @@ if ($envFile !== null) {
         'unrecognised tag is not filed as Direct',
         'orders inside the grace window are left alone',
         'an attributed order is not revisited',
+        'click ids classify without any UTM tags',
     ] as $label) {
         skip($label, 'writes test events; local runs only');
     }
@@ -1071,6 +1072,31 @@ if ($envFile !== null) {
         return 'only the 2 campaign-less orders, inside reclose';
     });
 
+    check('click ids classify without any UTM tags', function () use ($atT) {
+        // A separate branch in the matcher: gclid and fbclid are booleans on
+        // dim_campaign, not strings, so 'contains' cannot reach them.
+        $gclid  = Dim::campaign($atT, 'https://s.test/?gclid=abc123');
+        $fbclid = Dim::campaign($atT, 'https://s.test/?fbclid=xyz789');
+
+        assertTrue($gclid !== null && $fbclid !== null, 'a bare click id did not intern as a campaign');
+
+        // gclid IS an ads marker — Google adds it only on paid clicks.
+        assertTrue(
+            Channel::classify($atT, $gclid, null, null) === 'Google Ads',
+            'gclid did not classify as Google Ads'
+        );
+
+        // fbclid is NOT. Facebook stamps it on organic post, Messenger and
+        // group links too, so calling it 'Meta Ads' books organic social as
+        // ad-driven revenue — an overstatement in the direction nobody
+        // questions. Migration 007 corrected the seed; this keeps it corrected.
+        assertTrue(
+            Channel::classify($atT, $fbclid, null, null) === 'Facebook',
+            'fbclid was classified as an ad click: ' . Channel::classify($atT, $fbclid, null, null)
+        );
+
+        return 'gclid = Google Ads, fbclid = Facebook';
+    });
     $atShard->prepare('DELETE FROM events WHERE tenant_id = ?')->execute([$atT]);
     $atPdo->prepare('DELETE FROM tenants WHERE shop_domain = ?')->execute([$atShop]);
 }
