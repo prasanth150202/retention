@@ -34,7 +34,20 @@ final class ShopifyOAuth
      * scopesMatchToml() exists and the self-test runs it.
      */
     public const SCOPES = [
-        'read_all_orders',      // history beyond 60 days — retention needs it
+        // read_all_orders is DELIBERATELY ABSENT until Shopify approves it.
+        //
+        // Declaring a protected scope the app has not been granted makes
+        // `shopify app config link` fail outright, and the request for it
+        // cannot be filed until the app exists — so the app has to be created
+        // without it first. See docs/APP_REVIEW.md §1.2.
+        //
+        // ADD IT BACK HERE AND IN shopify.app.toml THE DAY APPROVAL LANDS.
+        // The two lists are compared by scopesMatchToml(), which the self-test
+        // runs, so they cannot drift apart silently.
+        //
+        // Until then the Admin API returns 60 days of orders, verifyScopes()
+        // reports history_limited, and the dashboard says so on the overview
+        // rather than quietly reporting wrong cohort figures.
         'read_orders',
         'read_customers',       // protected customer data; email + phone, hashed
         'read_products',
@@ -291,7 +304,12 @@ final class ShopifyOAuth
         return [
             'granted'         => $granted,
             'missing'         => $missing,
-            'history_limited' => in_array('read_all_orders', $missing, true),
+            // Read from what the store GRANTED, not from what is missing
+            // against our own list. read_all_orders is not in SCOPES while
+            // approval is pending, so it can never appear in $missing — and
+            // basing the flag on that would report full history for every
+            // store precisely when nobody has it.
+            'history_limited' => !in_array('read_all_orders', $granted, true),
         ];
     }
 

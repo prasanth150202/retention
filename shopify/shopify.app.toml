@@ -44,14 +44,20 @@ embedded = false
 #
 # Requested by Shopify at install time (managed installation), so the app
 # never builds an authorize URL. Merchants see this list on the consent
-# screen — every entry has to be defensible, which is why there are ten and
+# screen — every entry has to be defensible, which is why there are nine and
 # not the seventy-five an earlier iteration of this project asked for.
 #
-#   read_all_orders        order history beyond 60 days. Every retention,
+#   read_all_orders        NOT LISTED YET, AND THAT IS DELIBERATE.
+#                          Order history beyond 60 days; every retention,
 #                          cohort and lifetime-value figure depends on it.
-#                          Requires a reviewed access request in the Partner
-#                          Dashboard; without it the API silently returns 60
-#                          days and every cohort chart comes out empty.
+#                          It is a protected scope: declaring it before
+#                          Shopify grants it makes `shopify app config link`
+#                          fail, and the request cannot be filed until the app
+#                          exists. So the app is created without it, the
+#                          request goes in, and this line gains
+#                          `read_all_orders,` once approved — along with the
+#                          matching entry in ShopifyOAuth::SCOPES, which the
+#                          self-test checks against this file.
 #   read_orders            orders, totals, line items
 #   read_customers         first / second / third purchase logic. Protected
 #                          customer data — email and phone only, both stored
@@ -65,7 +71,7 @@ embedded = false
 #   read_customer_events   receive the events it emits
 # ---------------------------------------------------------------------
 [access_scopes]
-scopes = "read_all_orders,read_orders,read_customers,read_products,read_checkouts,read_inventory,read_price_rules,read_locales,write_pixels,read_customer_events"
+scopes = "read_orders,read_customers,read_products,read_checkouts,read_inventory,read_price_rules,read_locales,write_pixels,read_customer_events"
 
 
 [auth]

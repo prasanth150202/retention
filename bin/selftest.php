@@ -457,9 +457,25 @@ check('missing read_all_orders detected', function () {
     // every cohort chart is empty for reasons nobody traces back to here.
     $p = ShopifyOAuth::verifyScopes('read_orders,read_customers,read_products');
     assertTrue($p['history_limited'] === true, 'not flagged');
-    $f = ShopifyOAuth::verifyScopes(implode(',', ShopifyOAuth::SCOPES));
-    assertTrue($f['history_limited'] === false && $f['missing'] === [], 'false positive on a full grant');
-    return 'flagged when absent, quiet when granted';
+
+    // read_all_orders is not in SCOPES while approval is pending, so our own
+    // declared scopes are NOT a full grant — history is still limited. Saying
+    // otherwise is the failure mode that matters, because it would hide the
+    // banner on every store at exactly the time every store needs it.
+    $ours = ShopifyOAuth::verifyScopes(implode(',', ShopifyOAuth::SCOPES));
+    assertTrue($ours['missing'] === [], 'our own scope list did not verify clean');
+    assertTrue(
+        $ours['history_limited'] === !in_array('read_all_orders', ShopifyOAuth::SCOPES, true),
+        'history_limited disagrees with whether read_all_orders is declared'
+    );
+
+    // Once Shopify approves it and a store grants it, the flag goes quiet.
+    $full = ShopifyOAuth::verifyScopes(implode(',', ShopifyOAuth::SCOPES) . ',read_all_orders');
+    assertTrue($full['history_limited'] === false, 'false positive on a full grant');
+
+    return in_array('read_all_orders', ShopifyOAuth::SCOPES, true)
+        ? 'flagged when absent, quiet when granted'
+        : 'flagged while approval is pending, quiet once granted';
 });
 
 // -----------------------------------------------------------------
