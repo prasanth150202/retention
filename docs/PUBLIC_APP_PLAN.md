@@ -344,7 +344,7 @@ path.
 
 - Event storage at scale — §4, answer before ~15 installs
 - Retention policy after uninstall — §5, answer before review submission
-- App name
+- ~~App name~~ — **retention-dashboard**
 - Pricing
 
 ---
