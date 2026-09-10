@@ -1,21 +1,23 @@
 <?php
 /**
- * Shopify OAuth redirect target.
+ * Shopify OAuth callback — where an install completes.
  *
- * This URL must match the "Allowed redirection URL" in the Partner Dashboard
- * app configuration exactly — scheme, host and path. Shopify refuses the
- * install otherwise, and the error it shows does not say which part differs.
+ * Must match the Allowed redirection URL in the Partner Dashboard exactly.
+ * Shopify refuses the install otherwise and does not say which part differs.
  *
- * Deliberately outside the console's authentication: the merchant approving
+ * Deliberately outside the console's authentication: the merchant installing
  * the app is not a Digifyce staff member and has no session here. Security
  * comes from the state nonce and the HMAC, both verified in ShopifyOAuth.
+ *
+ * By the time this returns, the store is connected AND tracking. The merchant
+ * has done nothing but press Install.
  */
 
 declare(strict_types=1);
 
 $root = dirname(__DIR__, 2);
 require_once $root . '/app/lib/bootstrap.php';
-require_once $root . '/app/lib/ShopifyOAuth.php';
+require_once $root . '/app/lib/Merchant.php';
 
 odysseus_boot();
 
@@ -23,104 +25,103 @@ function page(string $title, string $body, int $status = 200): never
 {
     http_response_code($status);
     echo '<!doctype html><meta charset="utf-8"><meta name="robots" content="noindex">';
-    echo '<title>' . htmlspecialchars($title) . ' — Odysseus</title>';
+    echo '<meta name="viewport" content="width=device-width,initial-scale=1">';
+    echo '<title>' . htmlspecialchars($title) . ' — Retention Dashboard</title>';
     echo '<style>:root{color-scheme:light dark}body{font:15px/1.6 system-ui,sans-serif;'
        . 'max-width:620px;margin:12vh auto;padding:0 24px}h1{font-size:20px;margin-bottom:6px}'
        . 'code{background:#8881;padding:2px 6px;border-radius:4px}'
        . '.ok{color:#157f3b}.bad{color:#b3241e}.warn{color:#8a6100}'
-       . 'a.btn{display:inline-block;margin-top:18px;padding:9px 16px;border:1px solid #8886;'
-       . 'border-radius:7px;text-decoration:none;color:inherit}</style>';
+       . 'a.btn{display:inline-block;margin-top:18px;padding:10px 18px;border:1px solid #8886;'
+       . 'border-radius:8px;text-decoration:none;color:inherit;font-weight:550}</style>';
     echo '<h1>' . htmlspecialchars($title) . '</h1>' . $body;
     exit;
 }
 
+// The merchant declined, or Shopify refused. Not our failure.
 if (isset($_GET['error'])) {
-    // The merchant declined, or Shopify refused. Not our failure.
-    page('Install cancelled',
+    page('Installation cancelled',
         '<p>Shopify reported: <code>' . htmlspecialchars((string) $_GET['error']) . '</code></p>'
-        . '<p>Nothing was changed. You can start the connection again from the console.</p>'
-        . '<a class="btn" href="/?p=stores">Back to stores</a>');
+        . '<p>Nothing was changed and no data was collected.</p>');
 }
 
 try {
     $result = ShopifyOAuth::completeInstall($_GET, (string) ($_SERVER['QUERY_STRING'] ?? ''));
 } catch (Throwable $e) {
-    page('Connection failed',
+    page('Installation failed',
         '<p class="bad">' . htmlspecialchars($e->getMessage()) . '</p>'
-        . '<p>No token was stored.</p>'
-        . '<a class="btn" href="/?p=stores">Back to stores</a>', 400);
+        . '<p>No access token was stored.</p>', 400);
 }
 
 // ---------------------------------------------------------------------
-// Store the token against the tenant, creating it if this shop is new.
+// Store the tokens. A reinstall keeps its existing tenant_id and history.
 // ---------------------------------------------------------------------
-$pdo  = Db::core();
-$stmt = $pdo->prepare('SELECT tenant_id FROM tenants WHERE shop_domain = ?');
-$stmt->execute([$result['shop']]);
-$tenantId = $stmt->fetchColumn();
+$tenantId = Tenant::upsert($result['shop'], $result, $result['scope']);
+$tenant   = Tenant::find($tenantId);
 
-$encrypted = Crypto::encrypt($result['token']);
+// ---------------------------------------------------------------------
+// Activate the web pixel.
+//
+// The reason this app exists in this shape. No theme editing, no snippet to
+// paste, no settings page — tracking starts here.
+//
+// A failure is reported but does not fail the install: the store is connected
+// and orders will still sync. Better a working app with a fixable pixel than
+// an install that appears to have failed entirely.
+// ---------------------------------------------------------------------
+$pixelNote = '';
 
-if ($tenantId === false) {
-    require_once $root . '/app/lib/Snippet.php';
+try {
+    $api    = ShopifyApi::forTenant($tenantId);
+    $pixel  = $api->upsertWebPixel(['writeKey' => (string) $tenant['write_key']]);
+    $status = $pixel['action'];
 
-    $pdo->prepare(
-        "INSERT INTO tenants
-            (shop_domain, display_name, admin_token_enc, token_scopes, write_key,
-             pii_salt_ref, currency, iana_timezone, status, installed_at)
-         VALUES (?, ?, ?, ?, ?, 'tenant', 'INR', 'Asia/Kolkata', 'active', UTC_TIMESTAMP())"
-    )->execute([
-        $result['shop'],
-        explode('.', $result['shop'])[0],
-        $encrypted,
-        $result['scopes'],
-        Snippet::generateWriteKey(),
-    ]);
+    Db::core()->prepare(
+        "INSERT INTO job_runs (job_name, tenant_id, started_at, finished_at, status, message)
+         VALUES ('web_pixel', ?, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'ok', ?)"
+    )->execute([$tenantId, "Web pixel {$status}: {$pixel['id']}"]);
 
-    $tenantId = (int) $pdo->lastInsertId();
+    $pixelNote = '<p class="ok">Tracking is active. Nothing further to install.</p>';
+} catch (Throwable $e) {
+    Db::core()->prepare(
+        "INSERT INTO job_runs (job_name, tenant_id, started_at, finished_at, status, message)
+         VALUES ('web_pixel', ?, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'failed', ?)"
+    )->execute([$tenantId, substr($e->getMessage(), 0, 2000)]);
 
-    $pdo->prepare(
-        'INSERT IGNORE INTO channel_rules
-            (tenant_id, priority, match_field, match_op, match_value, channel, enabled)
-         SELECT ?, priority, match_field, match_op, match_value, channel, enabled
-           FROM channel_rules WHERE tenant_id = 0'
-    )->execute([$tenantId]);
-} else {
-    $tenantId = (int) $tenantId;
-    $pdo->prepare(
-        "UPDATE tenants
-            SET admin_token_enc = ?, token_scopes = ?, status = 'active',
-                backfill_state = 'pending'
-          WHERE tenant_id = ?"
-    )->execute([$encrypted, $result['scopes'], $tenantId]);
+    $pixelNote =
+        '<p class="warn">The store is connected, but the tracking pixel could not be '
+      . 'activated automatically. Order data will still sync. '
+      . '<br><small>' . htmlspecialchars($e->getMessage()) . '</small></p>';
 }
 
-// Queue the historical backfill.
-$pdo->prepare(
+// Queue the historical order backfill.
+Db::core()->prepare(
     "INSERT INTO sync_cursors (tenant_id, resource, last_run_at)
      VALUES (?, 'orders', NULL)
      ON DUPLICATE KEY UPDATE resource = resource"
 )->execute([$tenantId]);
 
-$scopes  = ShopifyOAuth::verifyScopes($result['scopes']);
+// ---------------------------------------------------------------------
+// read_all_orders is the one scope whose absence is silent: the install
+// succeeds, the API quietly returns 60 days, and every cohort chart comes out
+// empty months later with nothing pointing back here.
+// ---------------------------------------------------------------------
+$scopes  = ShopifyOAuth::verifyScopes($result['scope']);
 $warning = '';
 
 if ($scopes['history_limited']) {
-    // Worth stopping on. The install "succeeded", and every retention metric
-    // will be empty for reasons nobody would connect to this moment.
     $warning =
-        '<p class="warn"><strong>read_all_orders was not granted.</strong> The Admin API will '
-      . 'return only the last 60 days of orders, so retention, cohorts and lifetime value will '
-      . 'stay empty regardless of how much history the store has.</p>'
-      . '<p>Request it in the Partner Dashboard under App setup, then reconnect this store. '
-      . 'Behavioural tracking is unaffected — the pixel does not depend on it.</p>';
-} elseif ($scopes['missing'] !== []) {
-    $warning = '<p class="warn">Not granted: <code>'
-             . htmlspecialchars(implode(', ', $scopes['missing'])) . '</code></p>';
+        '<p class="warn"><strong>Limited order history.</strong> This app was not granted '
+      . 'access to orders older than 60 days, so retention and repeat-purchase figures will '
+      . 'be incomplete until that is approved. Everything else works normally.</p>';
 }
 
-page('Store connected',
+// Sign the merchant in so they land on their dashboard rather than a login.
+Merchant::startSession($tenantId, $result['shop']);
+
+page('Connected',
     '<p class="ok">' . htmlspecialchars($result['shop']) . ' is connected.</p>'
+    . $pixelNote
     . $warning
-    . '<p>Order history will begin syncing on the next scheduled run.</p>'
-    . '<a class="btn" href="/?p=store&id=' . $tenantId . '">Open store</a>');
+    . '<p>Order history is syncing in the background. Behavioural data appears as '
+    . 'visitors browse the store.</p>'
+    . '<a class="btn" href="/">Open the dashboard</a>');

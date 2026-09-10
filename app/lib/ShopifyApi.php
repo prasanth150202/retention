@@ -25,6 +25,9 @@ final class ShopifyApi
 {
     private const MAX_RETRIES = 5;
 
+    /** Set when built via forTenant(), so a 401 can refresh and retry. */
+    private ?int $tenantId = null;
+
     public function __construct(
         private string $shopDomain,
         private string $accessToken,
@@ -33,25 +36,26 @@ final class ShopifyApi
         $this->apiVersion ??= (string) Config::get('shopify.api_version', '2025-07');
     }
 
-    /** Build a client for a tenant, decrypting its stored token. */
+    /**
+     * Build a client for a store.
+     *
+     * Tenant::accessToken() refreshes transparently when the stored token is
+     * near expiry, so callers never handle expiry themselves. Public apps must
+     * use expiring tokens, and every access here would otherwise start failing
+     * exactly one hour after install.
+     */
     public static function forTenant(int $tenantId): self
     {
-        $stmt = Db::core()->prepare(
-            'SELECT shop_domain, admin_token_enc FROM tenants WHERE tenant_id = ?'
-        );
-        $stmt->execute([$tenantId]);
-        $row = $stmt->fetch();
+        $row = Tenant::find($tenantId);
 
         if (!$row) {
-            throw new RuntimeException("No such tenant: {$tenantId}");
-        }
-        if (empty($row['admin_token_enc'])) {
-            throw new RuntimeException(
-                "Store {$row['shop_domain']} has no Shopify API token. Connect it first."
-            );
+            throw new RuntimeException("No such store: {$tenantId}");
         }
 
-        return new self((string) $row['shop_domain'], Crypto::decrypt((string) $row['admin_token_enc']));
+        $api = new self((string) $row['shop_domain'], Tenant::accessToken($tenantId));
+        $api->tenantId = $tenantId;
+
+        return $api;
     }
 
     /**
@@ -62,7 +66,8 @@ final class ShopifyApi
      */
     public function query(string $query, array $variables = []): array
     {
-        $attempt = 0;
+        $attempt   = 0;
+        $refreshed = false;   // one token refresh per call, not a loop
 
         while (true) {
             $attempt++;
@@ -86,10 +91,34 @@ final class ShopifyApi
                 continue;
             }
 
-            if ($res['http'] === 401 || $res['http'] === 403) {
+            if ($res['http'] === 401) {
+                // With expiring tokens a 401 usually means "expired", not
+                // "uninstalled". Refresh once and retry before concluding the
+                // store is gone — treating every 401 as an uninstall would
+                // disconnect healthy stores every hour.
+                if ($this->tenantId !== null && !$refreshed) {
+                    $refreshed = true;
+                    try {
+                        $this->accessToken = Tenant::accessToken($this->tenantId);
+                        continue;
+                    } catch (Throwable $e) {
+                        throw new RuntimeException(
+                            "Token for {$this->shopDomain} expired and could not be refreshed: "
+                            . $e->getMessage()
+                        );
+                    }
+                }
+
                 throw new RuntimeException(
-                    "Shopify rejected the access token (HTTP {$res['http']}). The app may have "
-                    . 'been uninstalled, or the token revoked. Reconnect the store.'
+                    "Shopify rejected the access token for {$this->shopDomain}. The app has "
+                    . 'most likely been uninstalled, or its token revoked.'
+                );
+            }
+
+            if ($res['http'] === 403) {
+                throw new RuntimeException(
+                    "Shopify refused the request for {$this->shopDomain} (403). This usually "
+                    . 'means a scope the app was not granted — check read_all_orders.'
                 );
             }
 
@@ -117,6 +146,96 @@ final class ShopifyApi
 
             return $body['data'] ?? [];
         }
+    }
+
+    // -----------------------------------------------------------------
+    // Web pixel
+    // -----------------------------------------------------------------
+
+    /**
+     * Activate this app's web pixel on the store, or update it if present.
+     *
+     * This is what makes installation zero-touch: the merchant never opens the
+     * theme editor, never pastes a snippet, never sees a settings page. They
+     * press Install and tracking is live.
+     *
+     * `settings` is validated by Shopify against the schema declared in the
+     * extension's shopify.extension.toml. A mismatch fails the mutation rather
+     * than storing something the extension cannot read — which is a good
+     * failure, but means the two definitions must agree.
+     *
+     * An app has at most one web pixel per store, so creating when one exists
+     * is an error rather than a duplicate; this handles both paths.
+     *
+     * @param array<string,mixed> $settings
+     * @return array{id:string,action:string}
+     */
+    public function upsertWebPixel(array $settings): array
+    {
+        $json = json_encode($settings, JSON_UNESCAPED_SLASHES);
+
+        $existing = $this->findWebPixel();
+
+        if ($existing !== null) {
+            $data = $this->query(<<<'GQL'
+            mutation webPixelUpdate($id: ID!, $webPixel: WebPixelInput!) {
+              webPixelUpdate(id: $id, webPixel: $webPixel) {
+                webPixel { id }
+                userErrors { field message }
+              }
+            }
+            GQL, ['id' => $existing, 'webPixel' => ['settings' => $json]]);
+
+            $node = $data['webPixelUpdate'] ?? [];
+            self::assertNoUserErrors($node, 'webPixelUpdate');
+
+            return ['id' => (string) ($node['webPixel']['id'] ?? $existing), 'action' => 'updated'];
+        }
+
+        $data = $this->query(<<<'GQL'
+        mutation webPixelCreate($webPixel: WebPixelInput!) {
+          webPixelCreate(webPixel: $webPixel) {
+            webPixel { id }
+            userErrors { field message }
+          }
+        }
+        GQL, ['webPixel' => ['settings' => $json]]);
+
+        $node = $data['webPixelCreate'] ?? [];
+        self::assertNoUserErrors($node, 'webPixelCreate');
+
+        return ['id' => (string) ($node['webPixel']['id'] ?? ''), 'action' => 'created'];
+    }
+
+    /** The app's existing web pixel id on this store, or null. */
+    public function findWebPixel(): ?string
+    {
+        try {
+            $data = $this->query('{ webPixel { id settings } }');
+        } catch (Throwable) {
+            // Older API versions, or no pixel extension deployed yet.
+            return null;
+        }
+
+        $id = $data['webPixel']['id'] ?? null;
+
+        return is_string($id) && $id !== '' ? $id : null;
+    }
+
+    /** @param array<string,mixed> $node */
+    private static function assertNoUserErrors(array $node, string $label): void
+    {
+        if (empty($node['userErrors'])) {
+            return;
+        }
+
+        $messages = [];
+        foreach ($node['userErrors'] as $e) {
+            $field      = is_array($e['field'] ?? null) ? implode('.', $e['field']) : '';
+            $messages[] = trim(($field !== '' ? $field . ': ' : '') . ($e['message'] ?? ''));
+        }
+
+        throw new RuntimeException("{$label} failed: " . implode('; ', $messages));
     }
 
     // -----------------------------------------------------------------

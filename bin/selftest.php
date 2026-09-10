@@ -434,6 +434,24 @@ check('non-Shopify domain refused', fn() => assertThrows(
     fn() => ShopifyOAuth::normaliseShop('evil.com'),
     'an arbitrary domain was accepted as a shop'
 ));
+check('PHP scopes match shopify.app.toml', function () {
+    // Under managed installation Shopify grants what the TOML declares while
+    // the app requests ShopifyOAuth::SCOPES. If they drift, the app asks for
+    // one set and receives another and nothing raises an error.
+    $r = ShopifyOAuth::scopesMatchToml();
+    assertTrue($r['match'],
+        'scope drift — only in PHP: [' . implode(', ', $r['only_in_php'])
+        . '], only in TOML: [' . implode(', ', $r['only_in_toml']) . ']');
+    return count(ShopifyOAuth::SCOPES) . ' scopes, both files agree';
+});
+check('pixel scopes present', function () {
+    // Without these two, webPixelCreate fails and the merchant has to install
+    // a pixel by hand — which is the entire thing this app exists to avoid.
+    foreach (['write_pixels', 'read_customer_events'] as $s) {
+        assertTrue(in_array($s, ShopifyOAuth::SCOPES, true), "{$s} is missing");
+    }
+    return 'write_pixels + read_customer_events';
+});
 check('missing read_all_orders detected', function () {
     // Silent otherwise: the install succeeds, the API returns 60 days, and
     // every cohort chart is empty for reasons nobody traces back to here.
@@ -442,6 +460,100 @@ check('missing read_all_orders detected', function () {
     $f = ShopifyOAuth::verifyScopes(implode(',', ShopifyOAuth::SCOPES));
     assertTrue($f['history_limited'] === false && $f['missing'] === [], 'false positive on a full grant');
     return 'flagged when absent, quiet when granted';
+});
+
+// -----------------------------------------------------------------
+echo "\nWebhook verification\n";
+
+$hookSecret = 'shpss_webhook_test_secret_0123456789';
+$hookBody   = '{"id":820982911946154508,"shop_domain":"demo.myshopify.com"}';
+$hookSig    = base64_encode(hash_hmac('sha256', $hookBody, $hookSecret, true));
+
+check('genuine webhook accepted', function () use ($hookBody, $hookSig, $hookSecret) {
+    assertTrue(Webhook::verify($hookBody, $hookSig, $hookSecret), 'a real webhook was rejected');
+    return 'verified';
+});
+check('forged webhook rejected', function () use ($hookBody, $hookSig) {
+    assertTrue(!Webhook::verify($hookBody, $hookSig, 'wrong_secret'), 'wrong secret accepted');
+    return 'correctly refused';
+});
+check('tampered body rejected', function () use ($hookBody, $hookSig, $hookSecret) {
+    // The attack this stops: telling us a store uninstalled, or asking us to
+    // delete a merchant's data.
+    $evil = str_replace('demo.myshopify.com', 'victim.myshopify.com', $hookBody);
+    assertTrue(!Webhook::verify($evil, $hookSig, $hookSecret), 'a modified body was accepted');
+    return 'correctly refused';
+});
+check('missing signature rejected', function () use ($hookBody, $hookSecret) {
+    assertTrue(!Webhook::verify($hookBody, '', $hookSecret), 'unsigned body accepted');
+    return 'correctly refused';
+});
+check('webhook scheme differs from OAuth scheme', function () use ($hookBody, $hookSig, $hookSecret) {
+    // Webhooks are a base64 HMAC over the raw body; OAuth is a hex HMAC over
+    // sorted query params. Using the OAuth verifier on a webhook would reject
+    // every genuine delivery, so this asserts they are not interchangeable.
+    assertTrue(!ShopifyOAuth::verifyHmac($hookBody, $hookSecret), 'the two schemes were conflated');
+    return 'base64-over-body vs hex-over-query';
+});
+
+// -----------------------------------------------------------------
+echo "\nMerchant session\n";
+
+check('unsigned request creates no session', function () {
+    assertTrue(
+        Merchant::fromSignedRequest(['shop' => 'demo.myshopify.com'], 'shop=demo.myshopify.com') === null,
+        'a session was created without a signature'
+    );
+    return 'correctly refused';
+});
+check('stale signed request refused', function () use ($signed) {
+    // A signed URL is a bearer credential while it verifies. Bounding its age
+    // means one leaked into a browser history or a support ticket expires.
+    $secret = 'shpss_merchant_test_secret_012345';
+    $old    = ['shop' => 'demo.myshopify.com', 'timestamp' => (string) (time() - 8000)];
+    $qs     = $signed($old, $secret);
+    parse_str($qs, $parsed);
+    assertTrue(Merchant::fromSignedRequest($parsed, $qs) === null, 'a stale link was accepted');
+    return 'correctly refused';
+});
+
+// -----------------------------------------------------------------
+echo "\nToken lifecycle\n";
+
+check('expiring-token columns exist', function () {
+    // Public apps cannot use non-expiring tokens. Without these the app
+    // authenticates once and breaks exactly one hour later.
+    $cols = Db::core()->query(
+        "SELECT COLUMN_NAME FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tenants'"
+    )->fetchAll(PDO::FETCH_COLUMN);
+
+    foreach (['refresh_token_enc', 'token_expires_at', 'refresh_expires_at'] as $c) {
+        assertTrue(in_array($c, $cols, true), "tenants.{$c} is missing");
+    }
+    return 'refresh token + both expiries';
+});
+check('uninstall and billing columns exist', function () {
+    $cols = Db::core()->query(
+        "SELECT COLUMN_NAME FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tenants'"
+    )->fetchAll(PDO::FETCH_COLUMN);
+
+    foreach (['uninstalled_at', 'purge_after', 'purged_at',
+              'plan', 'billing_status', 'trial_ends_at'] as $c) {
+        assertTrue(in_array($c, $cols, true), "tenants.{$c} is missing");
+    }
+    return 'lifecycle + billing';
+});
+check('compliance request log exists', function () {
+    // Answering a data request within 30 days has to be provable, not just
+    // asserted.
+    $n = (int) Db::core()->query(
+        "SELECT COUNT(*) FROM information_schema.TABLES
+          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'compliance_requests'"
+    )->fetchColumn();
+    assertTrue($n === 1, 'compliance_requests is missing');
+    return 'present';
 });
 
 // -----------------------------------------------------------------

@@ -186,15 +186,24 @@ return [
     // Shopify
     // -----------------------------------------------------------------
     'shopify' => [
-        'api_version' => Env::get('SHOPIFY_API_VERSION', '2025-07'),
+        'api_version'   => Env::get('SHOPIFY_API_VERSION', '2025-07'),
 
-        // Eight scopes, not the 75 in shopify_key_fetch/shopify_token_exchange.py.
-        // read_all_orders and read_customers must ALSO be requested in the
-        // Partner Dashboard app config — the scope string alone is not enough.
-        // Without read_all_orders the API returns only 60 days of orders and
-        // every retention metric is empty.
-        'scopes' => 'read_all_orders,read_orders,read_customers,read_products,'
-                  . 'read_checkouts,read_inventory,read_price_rules,read_locales',
+        // One app, one credential pair - not one per store. Public
+        // distribution means these are ours and live in .env.
+        'client_id'     => Env::get('SHOPIFY_CLIENT_ID', ''),
+        'client_secret' => Env::get('SHOPIFY_CLIENT_SECRET', ''),
+
+        // Scopes are NOT listed here.
+        //
+        // They live in exactly two places that must agree: ShopifyOAuth::SCOPES
+        // (what the app requests) and [access_scopes] in
+        // shopify/shopify.app.toml (what Shopify grants under managed
+        // installation). A third copy here would be a third thing to drift,
+        // and the drift is silent — the app would ask for one set and receive
+        // another with nothing raising an error.
+        //
+        // ShopifyOAuth::scopesMatchToml() compares the two, and the self-test
+        // runs it.
     ],
 
     // Everything is stored UTC. Display timezone is per-tenant.
