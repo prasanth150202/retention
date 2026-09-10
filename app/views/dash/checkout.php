@@ -16,14 +16,18 @@
 
 $cur  = (string) ($tenant['currency'] ?? 'INR');
 $page = 'checkout';
-require __DIR__ . '/_toolbar.php';
 
 $stages = $abandon['stages'] ?? [];
 $top    = $stages === [] ? 0 : max(1, max(array_column($stages, 'entered')));
 ?>
 
+<div class="page-head">
+<div class="eyebrow">Lost revenue</div>
 <h1>Checkout</h1>
-<p class="sub">Where checkouts are lost, and how much is sitting in them.</p>
+  <p class="sub">Where checkouts are lost, and how much is sitting in them.</p>
+</div>
+
+<?php require __DIR__ . '/_toolbar.php'; ?>
 
 <?php if ($stages === [] || $top === 0): ?>
   <?php $what = 'checkout activity'; require __DIR__ . '/_empty.php'; ?>
@@ -40,7 +44,7 @@ $top    = $stages === [] ? 0 : max(1, max(array_column($stages, 'entered')));
       <div class="v"><?= Fmt::num((int) $abandon['completed']) ?></div>
       <div class="d">reached the confirmation page</div>
     </div>
-    <div class="tile">
+    <div class="tile accent">
       <div class="k">Abandonment rate</div>
       <div class="v"><?= Fmt::pct($abandon['rate']) ?></div>
       <div class="d">started but not finished</div>

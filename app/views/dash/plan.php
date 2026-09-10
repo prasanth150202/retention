@@ -18,6 +18,7 @@ $blocked = !$billing['access'];
 $status  = (string) $billing['status'];
 ?>
 
+<div class="eyebrow">Subscription</div>
 <h1>Plan</h1>
 <p class="sub">
   <?= $blocked ? 'Your figures are waiting — this just needs sorting out first.'

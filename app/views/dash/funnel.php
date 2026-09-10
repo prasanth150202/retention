@@ -20,13 +20,17 @@
  */
 
 $page = 'funnel';
-require __DIR__ . '/_toolbar.php';
 
 $top = $funnel === [] ? 0 : max(1, max(array_column($funnel, 'reached')));
 ?>
 
+<div class="page-head">
+<div class="eyebrow">Behaviour</div>
 <h1>Funnel</h1>
-<p class="sub">Where people stop between arriving and buying.</p>
+  <p class="sub">Where people stop between arriving and buying.</p>
+</div>
+
+<?php require __DIR__ . '/_toolbar.php'; ?>
 
 <?php if ($funnel === [] || $top === 0): ?>
   <?php $what = 'funnel'; require __DIR__ . '/_empty.php'; ?>
@@ -59,12 +63,12 @@ $top = $funnel === [] ? 0 : max(1, max(array_column($funnel, 'reached')));
   </div>
 
   <p class="note">
-    <b>Two numbers per step.</b> The solid bar counts everyone who reached that step at
-    all. The faint bar behind it counts only those who took every earlier step first,
-    in order. A visitor who lands straight on a product page from an ad reaches
-    "viewed a product" without ever visiting the home page, so the two differ — and
-    the gap between them is roughly how much of your traffic arrives deep in the site
-    rather than at the front door.
+    <b>Two numbers per step.</b> The pale bar is everyone who reached that step at all.
+    The solid bar nested inside it is those who took every earlier step first, in order
+    — always a subset, never more. A visitor who lands straight on a product page from
+    an ad reaches "viewed a product" without ever visiting the home page, so the two
+    differ, and the gap between them is roughly how much of your traffic arrives deep
+    in the site rather than at the front door.
   </p>
 
   <h2>The same figures as a table</h2>

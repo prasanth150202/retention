@@ -18,15 +18,31 @@
 
 $cur  = (string) ($tenant['currency'] ?? 'INR');
 $page = '';
+?>
+
+<div class="page-head">
+  <div class="eyebrow">Shopify Web Pixel &middot; Live Store Analytics</div>
+  <h1><?= Fmt::e((string) $tenant['display_name']) ?></h1>
+  <p class="sub"><?= Fmt::e((string) $tenant['shop_domain']) ?> &middot; every figure below is
+  built from this store's own traffic and orders.</p>
+</div>
+
+<?php
 require __DIR__ . '/_toolbar.php';
 
-$tile = static function (string $label, string $value, ?float $change, string $goodDir = 'up'): void {
+$tile = static function (
+    string $label,
+    string $value,
+    ?float $change,
+    string $goodDir = 'up',
+    bool $accent = false
+): void {
     $d = Fmt::delta($change);
     // The formatter knows the direction, not whether it is welcome. Refunds
     // rising is not good news, so each tile says which way is up for it.
     $cls = $d['dir'] === 'flat' ? 'flat' : ($d['dir'] === $goodDir ? 'up' : 'down');
     ?>
-    <div class="tile">
+    <div class="tile<?= $accent ? ' accent' : '' ?>">
       <div class="k"><?= Fmt::e($label) ?></div>
       <div class="v"><?= Fmt::e($value) ?></div>
       <div class="d <?= $cls ?>"><?= $d['text'] === '' ? '&nbsp;' : Fmt::e($d['text']) ?></div>
@@ -39,26 +55,10 @@ $tile = static function (string $label, string $value, ?float $change, string $g
   <?php $what = 'overview'; require __DIR__ . '/_empty.php'; ?>
 <?php else: ?>
 
-  <?php if (ShopifyOAuth::verifyScopes((string) ($tenant['token_scopes'] ?? ''))['history_limited']): ?>
-    <p class="note" style="border-left:3px solid var(--warn)">
-      <b>Limited order history.</b> This app currently has access to your last 60 days of
-      orders only, so repeat-purchase and cohort figures are incomplete — a customer whose
-      first order predates that window looks like a new customer. Everything else on this
-      page is unaffected. We are resolving this with Shopify.
-    </p>
-  <?php endif; ?>
-
-  <?php if (!empty($summary['provisional'])): ?>
-    <p class="note">
-      <b>Recent days are still settling.</b> Late events, refunds and Shopify's own
-      attribution keep arriving for up to three days, so the most recent figures can
-      still move. Anything older than that is final.
-    </p>
-  <?php endif; ?>
-
   <div class="tiles">
     <?php
-    $tile('Revenue', Fmt::moneyShort($summary['revenue_minor']['value'], $cur), $summary['revenue_minor']['change']);
+    // The one number the page is about gets the inverted tile.
+    $tile('Revenue', Fmt::moneyShort($summary['revenue_minor']['value'], $cur), $summary['revenue_minor']['change'], 'up', true);
     $tile('Orders', Fmt::num($summary['orders']['value']), $summary['orders']['change']);
     $tile('Average order', Fmt::money(
         $summary['aov_minor']['value'] === null ? null : (int) round($summary['aov_minor']['value']),
@@ -79,6 +79,23 @@ $tile = static function (string $label, string $value, ?float $change, string $g
     $tile('Refunded', Fmt::moneyShort($summary['refunded_minor']['value'], $cur), $summary['refunded_minor']['change'], 'down');
     ?>
   </div>
+
+  <?php if (ShopifyOAuth::verifyScopes((string) ($tenant['token_scopes'] ?? ''))['history_limited']): ?>
+    <p class="note" style="border-left:3px solid var(--warn)">
+      <b>Limited order history.</b> This app currently has access to your last 60 days of
+      orders only, so repeat-purchase and cohort figures are incomplete — a customer whose
+      first order predates that window looks like a new customer. Everything else on this
+      page is unaffected. We are resolving this with Shopify.
+    </p>
+  <?php endif; ?>
+
+  <?php if (!empty($summary['provisional'])): ?>
+    <p class="note">
+      <b>Recent days are still settling.</b> Late events, refunds and Shopify's own
+      attribution keep arriving for up to three days, so the most recent figures can
+      still move. Anything older than that is final.
+    </p>
+  <?php endif; ?>
 
   <h2>Day by day</h2>
   <div class="panel" style="padding:14px 16px">

@@ -17,11 +17,15 @@
 
 $cur  = (string) ($tenant['currency'] ?? 'INR');
 $page = 'geography';
-require __DIR__ . '/_toolbar.php';
 ?>
 
+<div class="page-head">
+<div class="eyebrow">Audience</div>
 <h1>Geography</h1>
-<p class="sub">Where visitors are, what they browse on, and where they land.</p>
+  <p class="sub">Where visitors are, what they browse on, and where they land.</p>
+</div>
+
+<?php require __DIR__ . '/_toolbar.php'; ?>
 
 <?php if ($geography === [] && $devices === [] && $landing === []): ?>
   <?php $what = 'location data'; require __DIR__ . '/_empty.php'; ?>

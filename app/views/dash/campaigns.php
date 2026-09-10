@@ -21,7 +21,6 @@
 
 $cur  = (string) ($tenant['currency'] ?? 'INR');
 $page = 'campaigns';
-require __DIR__ . '/_toolbar.php';
 
 $modelNames = [
     'pixel_last'    => 'Last touch (ours)',
@@ -33,8 +32,13 @@ $modelNames = [
 $keep = ['from' => $range['from'], 'to' => $range['to']];
 ?>
 
-<h1>Campaigns</h1>
-<p class="sub">Which sources bring visitors, orders and revenue.</p>
+<div class="page-head">
+  <div class="eyebrow">Acquisition</div>
+  <h1>Campaigns</h1>
+  <p class="sub">Which sources bring visitors, orders and revenue.</p>
+</div>
+
+<?php require __DIR__ . '/_toolbar.php'; ?>
 
 <div class="toolbar" style="margin-top:-8px">
   <div class="ranges">

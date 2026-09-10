@@ -21,8 +21,11 @@ $buckets = [30, 60, 90, 180];
 $today   = new DateTimeImmutable('now');
 ?>
 
-<h1>Retention</h1>
-<p class="sub">Whether customers come back, and how long they take.</p>
+<div class="page-head">
+  <div class="eyebrow">Lifetime value</div>
+  <h1>Retention</h1>
+  <p class="sub">Whether customers come back, and how long they take.</p>
+</div>
 
 <?php if (($retention['cohorts'] ?? []) === [] && ($retention['buckets_total'] ?? 0) === 0): ?>
   <?php $what = 'retention data'; require __DIR__ . '/_empty.php'; ?>
@@ -41,7 +44,7 @@ $today   = new DateTimeImmutable('now');
         <div class="v"><?= Fmt::num($total) ?></div>
         <div class="d">who have ordered at least once</div>
       </div>
-      <div class="tile">
+      <div class="tile accent">
         <div class="k">Bought again</div>
         <div class="v"><?= Fmt::pct($total > 0 ? round($more / $total * 100, 1) : null) ?></div>
         <div class="d"><?= Fmt::num($more) ?> of <?= Fmt::num($total) ?></div>

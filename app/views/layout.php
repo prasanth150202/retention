@@ -5,9 +5,12 @@
  * Merchants see their own store; Digifyce staff see every store. The header
  * differs, the rest does not.
  *
- * Deliberately plain for now. The analytics surface arrives in P4 and is what
- * a merchant judges the product on, so it deserves real design attention then.
- * What matters here is that data is legible and state is unambiguous.
+ * The visual language is ported from the MadMinimalist customer-behaviour
+ * report in the Pixel Analysis Shopify project: warm paper ground, terracotta
+ * accent, letterspaced small-caps section rules with a short accent dash.
+ *
+ * That is an editorial report look rather than an admin-panel look, and it is
+ * the right one here — a merchant reads this page, they do not operate it.
  *
  * No build step, so styles are inline and there is no framework.
  *
@@ -28,185 +31,248 @@ $nav  = $nav ?? 'stores';
 <meta name="robots" content="noindex,nofollow">
 <title><?= htmlspecialchars($title) ?> — Retention Dashboard</title>
 <style>
+  /* ---------------------------------------------------------------
+     Design ported from the MadMinimalist customer-behaviour report
+     (Pixel Analysis Shopify). Warm paper ground, terracotta accent,
+     letterspaced small-caps section rules. It is an editorial report
+     look rather than an admin-panel look, which is right: this is
+     something a merchant reads, not a console they operate.
+
+     Single light palette, as the original has. A dark variant of a
+     warm cream ground is its own design exercise, not a media query.
+     --------------------------------------------------------------- */
   :root {
-    color-scheme: light dark;
-    --bg:      #fbfbfa;  --fg:     #1b1b19;  --muted: #6d6d68;
-    --line:    #e3e3df;  --panel:  #ffffff;  --accent:#1d5c46;
-    --danger:  #a3241c;  --warn:   #8a6100;  --ok:    #157f3b;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #16171a; --fg: #e8e8e4; --muted: #9a9a94;
-      --line: #2c2e33; --panel: #1d1f23; --accent: #6bbf9a;
-    }
+    color-scheme: light;
+    --bg:     #f4f1ea;  --panel: #fffdf8;  --ink:  #1f1d1a;
+    --muted:  #7c756a;  --line:  #e4ddcf;  --sunk: #ece5d6;
+    --accent: #c2643b;  --accent-lite: #d98a5f;  --accent-wash: #e9cbb8;
+    --good:   #3f7d54;  --bad:   #c0413b;  --warn: #c9912f;  --blue: #2f6f8f;
+    --body:   #48433b;
+
+    /* Older rules and views still speak in these names. */
+    --fg: var(--ink);  --danger: var(--bad);  --ok: var(--good);
   }
   * { box-sizing: border-box; }
   body {
-    margin: 0; background: var(--bg); color: var(--fg);
-    font: 15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
   }
+
+  /* --- header ------------------------------------------------------ */
   header {
-    border-bottom: 1px solid var(--line); background: var(--panel);
-    padding: 0 20px; display: flex; align-items: center; gap: 26px;
+    border-bottom: 2px solid var(--ink); background: var(--panel);
+    padding: 0 26px; display: flex; align-items: center; gap: 26px;
   }
-  header .brand { font-weight: 650; letter-spacing: -.01em; padding: 14px 0; }
-  header nav { display: flex; gap: 20px; flex: 1; }
+  header .brand {
+    font-weight: 800; letter-spacing: -.01em; padding: 15px 0; font-size: 16px;
+  }
+  header nav { display: flex; gap: 22px; flex: 1; }
   header nav a {
-    color: var(--muted); text-decoration: none; padding: 15px 0;
-    border-bottom: 2px solid transparent; font-size: 14px;
+    color: var(--muted); text-decoration: none; padding: 16px 0;
+    border-bottom: 2px solid transparent; font-size: 13px; font-weight: 600;
+    letter-spacing: .02em;
   }
-  header nav a.on { color: var(--fg); border-bottom-color: var(--accent); }
-  header nav a:hover { color: var(--fg); }
-  header .who { color: var(--muted); font-size: 13px; }
-  header .who a { color: var(--muted); }
+  header nav a.on { color: var(--ink); border-bottom-color: var(--accent); }
+  header nav a:hover { color: var(--ink); }
+  header .who { color: var(--muted); font-size: 12px; }
+  header .who a { color: var(--accent); font-weight: 600; }
 
-  main { max-width: 1040px; margin: 0 auto; padding: 28px 20px 80px; }
-  h1 { font-size: 21px; margin: 0 0 4px; letter-spacing: -.01em; }
-  h2 { font-size: 15px; margin: 32px 0 10px; }
-  .sub { color: var(--muted); margin: 0 0 24px; }
+  main { max-width: 1180px; margin: 0 auto; padding: 34px 26px 80px; }
 
+  /* --- editorial headings ------------------------------------------ */
+  .eyebrow {
+    font-size: 11px; letter-spacing: .22em; text-transform: uppercase;
+    color: var(--accent); font-weight: 700; margin-bottom: 8px;
+  }
+  h1 {
+    font-size: 30px; line-height: 1.08; margin: 0 0 6px;
+    font-weight: 800; letter-spacing: -.02em;
+  }
+  /* The accent dash before every section rule is the signature of this
+     design. It comes free on any <h2> a view writes. */
+  h2 {
+    font-size: 13px; letter-spacing: .16em; text-transform: uppercase;
+    color: var(--muted); font-weight: 700; margin: 40px 0 16px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  h2::before {
+    content: ""; width: 22px; height: 2px; background: var(--accent);
+    display: inline-block; flex: none;
+  }
+  .sub {
+    color: var(--muted); font-size: 14.5px; max-width: 760px; margin: 0 0 26px;
+  }
+  .sub b { color: var(--ink); }
+  .page-head { border-bottom: 2px solid var(--ink); padding-bottom: 20px; margin-bottom: 26px; }
+  .page-head .sub { margin-bottom: 0; }
+
+  /* --- panels ------------------------------------------------------- */
   .panel {
     background: var(--panel); border: 1px solid var(--line);
-    border-radius: 10px; padding: 20px; margin-bottom: 18px;
+    border-radius: 14px; padding: 20px 22px; margin-bottom: 16px;
   }
-  table { width: 100%; border-collapse: collapse; }
-  th {
-    text-align: left; font-size: 12px; text-transform: uppercase;
-    letter-spacing: .04em; color: var(--muted); font-weight: 600;
-    padding: 0 10px 8px; border-bottom: 1px solid var(--line);
-  }
-  td { padding: 11px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
-  tr:last-child td { border-bottom: 0; }
 
-  label { display: block; font-size: 13px; font-weight: 600; margin: 14px 0 5px; }
+  /* --- tables ------------------------------------------------------- */
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  th {
+    text-align: left; font-size: 11px; text-transform: uppercase;
+    letter-spacing: .06em; color: var(--muted); font-weight: 700;
+    padding: 0 10px 9px; border-bottom: 1px solid var(--line);
+  }
+  td { padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  tr:last-child td { border-bottom: 0; }
+  table.data th { white-space: nowrap; }
+  table.data td.n, table.data th.n { text-align: right; font-variant-numeric: tabular-nums; }
+  table.data tbody tr:hover td { background: #faf6ed; }
+  table.data .name { font-weight: 600; }
+  table.data .sub2 { font-size: 12px; color: var(--muted); }
+
+  /* --- forms -------------------------------------------------------- */
+  label { display: block; font-size: 13px; font-weight: 700; margin: 14px 0 5px; }
   .hint { font-weight: 400; color: var(--muted); font-size: 12px; margin-top: 3px; }
   input[type=text], input[type=email], input[type=password], select {
-    width: 100%; padding: 9px 11px; font: inherit; color: var(--fg);
-    background: var(--bg); border: 1px solid var(--line); border-radius: 7px;
+    width: 100%; padding: 9px 11px; font: inherit; color: var(--ink);
+    background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
   }
   input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 
   button, .btn {
-    font: inherit; font-weight: 550; padding: 9px 16px; border-radius: 7px;
-    border: 1px solid var(--line); background: var(--panel); color: var(--fg);
+    font: inherit; font-weight: 700; padding: 9px 16px; border-radius: 8px;
+    border: 1px solid var(--line); background: var(--panel); color: var(--ink);
     cursor: pointer; text-decoration: none; display: inline-block;
   }
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   button:hover, .btn:hover { filter: brightness(.97); }
 
-  .flash { padding: 11px 15px; border-radius: 8px; margin-bottom: 18px; font-size: 14px; }
-  .flash.ok  { background: color-mix(in srgb, var(--ok) 12%, transparent);     border: 1px solid var(--ok); }
-  .flash.err { background: color-mix(in srgb, var(--danger) 12%, transparent); border: 1px solid var(--danger); }
+  .flash { padding: 11px 15px; border-radius: 10px; margin-bottom: 18px; font-size: 14px; }
+  .flash.ok  { background: #e1efe4; border: 1px solid var(--good); }
+  .flash.err { background: #f6e1df; border: 1px solid var(--bad); }
 
   code, pre { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
-  code { font-size: 12.5px; background: color-mix(in srgb, var(--fg) 7%, transparent);
-         padding: 2px 6px; border-radius: 4px; }
+  code { font-size: 12px; background: #efe9dc; padding: 1px 6px;
+         border-radius: 5px; color: var(--accent); }
   pre {
-    background: color-mix(in srgb, var(--fg) 5%, transparent);
-    border: 1px solid var(--line); border-radius: 8px;
+    background: #efe9dc; border: 1px solid var(--line); border-radius: 10px;
     padding: 14px; overflow-x: auto; font-size: 12.5px; line-height: 1.5;
   }
   .muted { color: var(--muted); }
-  .pill  { font-size: 11px; padding: 2px 8px; border-radius: 20px;
-           border: 1px solid var(--line); color: var(--muted); }
-  .pill.live { color: var(--ok); border-color: var(--ok); }
-  .pill.warn { color: var(--warn); border-color: var(--warn); }
 
-  /* --- date range ------------------------------------------------ */
+  .pill { display: inline-block; padding: 2px 9px; border-radius: 20px;
+          font-size: 11px; font-weight: 700; background: #efe9dc; color: var(--muted); }
+  .pill.live { background: #e1efe4; color: var(--good); }
+  .pill.warn { background: #f7ecd3; color: var(--warn); }
+  .pill.bad  { background: #f6e1df; color: var(--bad); }
+
+  /* --- date range --------------------------------------------------- */
   .toolbar {
     display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-    margin: -6px 0 20px;
+    margin: 0 0 22px;
   }
-  .toolbar .ranges { display: flex; gap: 2px; max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+  .toolbar .ranges {
+    display: flex; gap: 3px; max-width: 100%; overflow-x: auto; scrollbar-width: none;
+  }
   .toolbar .ranges::-webkit-scrollbar { display: none; }
   .toolbar .ranges a {
-    font-size: 13px; padding: 5px 11px; border-radius: 7px; white-space: nowrap;
+    font-size: 12px; padding: 6px 12px; border-radius: 8px; white-space: nowrap;
     color: var(--muted); text-decoration: none; border: 1px solid transparent;
+    font-weight: 600; letter-spacing: .02em;
   }
   .toolbar .ranges a.on {
-    color: var(--fg); background: var(--panel); border-color: var(--line);
+    color: var(--ink); background: var(--panel); border-color: var(--line);
   }
-  .toolbar .ranges a:hover { color: var(--fg); }
+  .toolbar .ranges a:hover { color: var(--ink); }
   .toolbar .spacer { flex: 1; }
 
-  /* --- metric tiles ---------------------------------------------- */
+  /* --- metric tiles -------------------------------------------------- */
   .tiles {
-    display: grid; gap: 12px; margin-bottom: 18px;
-    grid-template-columns: repeat(auto-fit, minmax(144px, 1fr));
+    display: grid; gap: 14px; margin-bottom: 16px;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   }
   .tile {
     background: var(--panel); border: 1px solid var(--line);
-    border-radius: 10px; padding: 14px 16px;
+    border-radius: 14px; padding: 16px 18px;
   }
   .tile .k {
-    font-size: 11.5px; text-transform: uppercase; letter-spacing: .04em;
-    color: var(--muted); font-weight: 600;
+    font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--muted); font-weight: 700;
     /* Two lines' worth, so a long label does not shunt its value below the
        values beside it. */
-    min-height: 2.7em;
+    min-height: 2.6em;
   }
   .tile .v {
-    font-size: 23px; font-weight: 600; letter-spacing: -.02em;
-    margin: 5px 0 2px; line-height: 1.15;
+    font-size: 27px; font-weight: 800; letter-spacing: -.02em;
+    margin: 6px 0 3px; line-height: 1.1;
   }
   .tile .d { font-size: 12px; color: var(--muted); }
-  .d.up   { color: var(--ok); }
-  .d.down { color: var(--danger); }
+  .d.up   { color: var(--good); }
+  .d.down { color: var(--bad); }
 
-  /* --- funnel ----------------------------------------------------- */
-  .funnel { display: flex; flex-direction: column; gap: 3px; }
-  .fstep { display: grid; grid-template-columns: 218px 1fr 132px; gap: 14px; align-items: center; }
-  .fstep .lbl { font-size: 13.5px; }
-  .fbar { background: color-mix(in srgb, var(--fg) 6%, transparent); border-radius: 5px; height: 30px; position: relative; }
+  /* One inverted tile per group, for the number the page is about. The
+     original report does this for conversion rate, and it is what makes a
+     row of tiles read as a headline rather than a wall. */
+  .tile.accent { background: var(--ink); color: #fff; border-color: var(--ink); }
+  .tile.accent .k, .tile.accent .d { color: #cfc7b8; }
+  .tile.accent .d.up { color: #8fd3a4; }
+  .tile.accent .d.down { color: #ec9b95; }
+
+  /* --- funnel --------------------------------------------------------- */
+  .funnel { display: flex; flex-direction: column; gap: 7px; }
+  .fstep { display: grid; grid-template-columns: 218px 1fr 132px; gap: 12px; align-items: center; }
+  .fstep .lbl { font-size: 13px; font-weight: 600; }
+  .fbar { background: var(--sunk); border-radius: 7px; height: 30px; position: relative; overflow: hidden; }
+  /* Two bars, one inside the other: the pale one is everyone who reached
+     the step, the solid one those who took every earlier step in order.
+     Strict is always a subset, so it nests rather than overlaps. */
   .fbar span {
-    position: absolute; inset: 0 auto 0 0; border-radius: 5px;
-    background: var(--accent); opacity: .82; min-width: 2px;
+    position: absolute; inset: 0 auto 0 0; border-radius: 7px;
+    background: var(--accent-wash); min-width: 2px;
   }
   .fbar em {
-    position: absolute; inset: 0 auto 0 0; border-radius: 5px;
-    background: var(--accent); opacity: .45; min-width: 1px;
+    position: absolute; inset: 0 auto 0 0; border-radius: 7px;
+    background: linear-gradient(90deg, var(--accent), var(--accent-lite));
+    min-width: 2px;
   }
-  .fstep .n { font-size: 13px; text-align: right; color: var(--muted); }
-  .fstep .n b { color: var(--fg); font-weight: 600; }
-  .fdrop { font-size: 12px; color: var(--danger); }
+  .fstep .n { font-size: 12px; text-align: right; color: var(--muted); }
+  .fstep .n b { color: var(--ink); font-weight: 800; font-size: 14px; }
+  .fdrop { font-size: 11.5px; color: var(--bad); font-weight: 600; }
 
-  /* --- data tables ------------------------------------------------ */
-  table.data td, table.data th { padding: 9px 10px; }
-  table.data th { white-space: nowrap; }
-  table.data td.n, table.data th.n { text-align: right; font-variant-numeric: tabular-nums; }
-  table.data tbody tr:hover td { background: color-mix(in srgb, var(--fg) 3%, transparent); }
-  table.data .name { font-weight: 500; }
-  table.data .sub2 { font-size: 12px; color: var(--muted); }
+  /* --- inline bar inside a table cell --------------------------------- */
+  .minibar {
+    height: 6px; border-radius: 6px; min-width: 2px;
+    background: linear-gradient(90deg, var(--accent), var(--accent-lite));
+  }
 
-  /* --- inline bar inside a table cell ----------------------------- */
-  .minibar { height: 5px; border-radius: 3px; background: var(--accent); opacity: .55; min-width: 2px; }
-
-  /* --- cohort grid ------------------------------------------------ */
+  /* --- cohort grid ----------------------------------------------------- */
   .cohort td.c { text-align: center; font-variant-numeric: tabular-nums; font-size: 13px; }
   .cohort td.c span {
-    display: block; border-radius: 5px; padding: 6px 0;
-    background: color-mix(in srgb, var(--accent) calc(var(--w) * 1%), transparent);
+    display: block; border-radius: 7px; padding: 6px 0; font-weight: 700;
+    background: color-mix(in srgb, var(--accent) calc(var(--w) * 1.4%), transparent);
   }
 
   .empty { text-align: center; padding: 46px 20px; color: var(--muted); }
-  .empty strong { display: block; color: var(--fg); margin-bottom: 6px; font-size: 15px; }
+  .empty strong { display: block; color: var(--ink); margin-bottom: 6px; font-size: 16px; font-weight: 800; }
 
+  /* A callout, not a grey box. The left rule is what makes it read as an
+     aside rather than as more of the same. */
   .note {
-    font-size: 12.5px; color: var(--muted); background: color-mix(in srgb, var(--fg) 4%, transparent);
-    border-radius: 8px; padding: 10px 13px; margin: 0 0 16px;
+    font-size: 13px; color: var(--body); background: var(--panel);
+    border: 1px solid var(--line); border-left: 4px solid var(--accent);
+    border-radius: 10px; padding: 13px 16px; margin: 0 0 16px;
   }
-  .note b { color: var(--fg); font-weight: 600; }
+  .note b { color: var(--ink); font-weight: 800; }
 
   @media (max-width: 700px) {
     .fstep { grid-template-columns: 1fr; gap: 3px; }
     .fstep .n { text-align: left; }
+    h1 { font-size: 24px; }
 
     /* The header has to wrap onto two rows here. Left as one flex row, the
        brand and the shop domain squeeze the navigation to nothing and the
        merchant cannot reach any tab but the one they are on. */
-    header { flex-wrap: wrap; gap: 0 14px; padding: 0 14px; align-items: baseline; }
+    header { flex-wrap: wrap; gap: 0 14px; padding: 0 16px; align-items: baseline; }
     header .brand { padding: 13px 0 6px; font-size: 15px; }
-    header .who   { margin-left: auto; font-size: 12px; }
+    header .who   { margin-left: auto; font-size: 11px; }
     header nav {
       order: 3; flex: 0 0 100%; gap: 18px;
       overflow-x: auto; scrollbar-width: none;
@@ -214,7 +280,7 @@ $nav  = $nav ?? 'stores';
     header nav::-webkit-scrollbar { display: none; }
     header nav a { padding: 6px 0 10px; white-space: nowrap; }
 
-    main { padding: 20px 14px 60px; }
+    main { padding: 22px 16px 60px; }
 
     /* Wide tables scroll inside their own panel. The page itself must never
        scroll sideways — a merchant swiping a report should move the report,
@@ -265,7 +331,7 @@ $nav  = $nav ?? 'stores';
     // what this page is for.
     if (class_exists('Billing') && Billing::enabled()):
     ?>
-      <a href="/?p=plan"<?= $nav === 'plan' ? ' style="color:var(--fg)"' : '' ?>>Plan</a> ·
+      <a href="/?p=plan"<?= $nav === 'plan' ? ' style="color:var(--ink)"' : '' ?>>Plan</a> ·
     <?php endif; ?>
     <?= htmlspecialchars((string) $merchant['shop_domain']) ?>
   </span>

@@ -15,7 +15,6 @@
 
 $cur  = (string) ($tenant['currency'] ?? 'INR');
 $page = 'products';
-require __DIR__ . '/_toolbar.php';
 
 /** @param array<int,array<string,mixed>> $rows */
 $table = static function (array $rows, string $cur): void {
@@ -61,8 +60,13 @@ $table = static function (array $rows, string $cur): void {
 };
 ?>
 
+<div class="page-head">
+<div class="eyebrow">Catalogue</div>
 <h1>Products</h1>
-<p class="sub">What people look at, what they buy, and what they leave behind.</p>
+  <p class="sub">What people look at, what they buy, and what they leave behind.</p>
+</div>
+
+<?php require __DIR__ . '/_toolbar.php'; ?>
 
 <?php if ($products === []): ?>
   <?php $what = 'product activity'; require __DIR__ . '/_empty.php'; ?>
