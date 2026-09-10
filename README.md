@@ -6,6 +6,8 @@ Full design: **[TECHNICAL_PLAN.md](TECHNICAL_PLAN.md)** — read §3 (constraint
 
 **Current direction: [docs/PUBLIC_APP_PLAN.md](docs/PUBLIC_APP_PLAN.md)** — a public Shopify App Store app, superseding parts of the technical plan above.
 
+Reference: **[docs/TRACKING_AND_PRIVACY.md](docs/TRACKING_AND_PRIVACY.md)** — what each tracking mechanism can see, and the privacy position.
+
 Handover docs: **[docs/SYSADMIN.md](docs/SYSADMIN.md)** (cron, backups, yearly database rotation) · **[docs/SHOPIFY_APP_SETUP.md](docs/SHOPIFY_APP_SETUP.md)** (creating the Shopify app and requesting scopes)
 
 | | |
