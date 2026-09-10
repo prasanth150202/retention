@@ -908,6 +908,7 @@ if ($envFile !== null) {
         'orders inside the grace window are left alone',
         'an attributed order is not revisited',
         'click ids classify without any UTM tags',
+        'one Google campaign lands in one row',
     ] as $label) {
         skip($label, 'writes test events; local runs only');
     }
@@ -1126,6 +1127,31 @@ if ($envFile !== null) {
         );
 
         return 'gclid = Google Ads, fbclid = Facebook';
+    });
+    check('one Google campaign lands in one row', function () use ($atT) {
+        // The same Google Ads campaign arrives tagged two ways depending on
+        // whether auto-tagging is on: a gclid with no UTM parameters, or
+        // utm_source=google&utm_medium=cpc. If those classify differently the
+        // campaign is split across two rows in the Campaigns tab and neither
+        // shows the real total — a merchant reconciling against Google Ads
+        // finds both numbers too low and nothing explaining why.
+        $auto   = Dim::campaign($atT, 'https://s.test/?gclid=abc123');
+        $manual = Dim::campaign($atT, 'https://s.test/?utm_source=google&utm_medium=cpc');
+
+        $a = Channel::classify($atT, $auto, null, null);
+        $m = Channel::classify($atT, $manual, null, null);
+
+        assertTrue($a === $m, "auto-tagged gave '{$a}', manually tagged gave '{$m}'");
+        assertTrue($a === 'Google Ads', "expected Google Ads, got '{$a}'");
+
+        // Organic Google must NOT be swept in with them. It carries no UTM
+        // parameters and is matched on referrer alone.
+        $organic = Dim::referrer($atT, 'https://www.google.com/search?q=kurta');
+        $o = Channel::classify($atT, null, $organic, null);
+
+        assertTrue($o !== 'Google Ads', "organic Google was classified as paid ('{$o}')");
+
+        return "both paths Google Ads, organic stays {$o}";
     });
     $atShard->prepare('DELETE FROM events WHERE tenant_id = ?')->execute([$atT]);
     $atPdo->prepare('DELETE FROM tenants WHERE shop_domain = ?')->execute([$atShop]);

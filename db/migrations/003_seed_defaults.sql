@@ -32,7 +32,10 @@ INSERT INTO channel_rules (tenant_id, priority, match_field, match_op, match_val
   (0, 10, 'utm_source',   'contains', 'instagram',  'Instagram',        1),
   (0, 11, 'utm_source',   'contains', 'facebook',   'Facebook',         1),
   (0, 12, 'utm_source',   'contains', 'fb',         'Facebook',         1),
-  (0, 13, 'utm_source',   'contains', 'google',     'Google',           1),
+  -- Google Ads either way: auto-tagging gives a gclid (rule 50) and
+  -- manual tagging gives utm_source=google. Google organic never adds
+  -- UTM parameters, so a google source is one an advertiser typed.
+  (0, 13, 'utm_source',   'contains', 'google',     'Google Ads',       1),
   (0, 14, 'utm_source',   'contains', 'youtube',    'YouTube',          1),
   (0, 15, 'utm_source',   'contains', 'whatsapp',   'WhatsApp',         1),
   (0, 16, 'utm_source',   'contains', 'klaviyo',    'Email',            1),

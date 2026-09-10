@@ -18,7 +18,7 @@ Nothing below can be done from the code side.
 |---|---|---|
 | 1 | **Partner Dashboard `client_id` and `client_secret`** for the `retention-dashboard` app | Without them `shopify app config link` and `shopify app deploy` cannot run, so the web pixel extension and webhook subscriptions are never registered. Nothing installs. |
 | 2 | **Request `read_all_orders`** for this app | It does **not** transfer from the earlier custom app. Without it the Admin API silently returns 60 days of orders and every cohort and repeat-purchase figure comes out wrong rather than empty — which is worse, because it looks plausible. Partner Dashboard → the app → API access → request, with a written justification. |
-| 3 | **The price** | `BILLING_PRICE` / `BILLING_CURRENCY` in `.env` are placeholders (USD 19.00). Shopify bills in the currency set there, not the store's. |
+| 3 | **The price** | Currency decided: **USD**. `BILLING_PRICE` is still a placeholder (19.00) and must match the listing exactly — a mismatch is a rejection. |
 | 4 | **Rotate the credentials pasted into chat** | The database passwords and the old app's `shpss_…` secret. Assume they are compromised. |
 | 5 | **Listing copy, icon and screenshots** | Section 5 below lists what is needed. |
 
@@ -124,14 +124,6 @@ subtitles, and wants the expected outcome shown for each case.
 ---
 
 ## 6. Known gaps, stated rather than discovered
-
-**Channel naming for Google is inconsistent.** A Google Ads click with
-auto-tagging on (a `gclid`, no UTM parameters) is filed as *Google Ads*. The
-same campaign tagged manually (`utm_source=google&utm_medium=cpc`) is filed as
-*Google*, because an explicit source outranks a medium. One campaign, two rows
-in the Campaigns tab. The rules are editable data, so this is a one-row fix in
-`channel_rules` — but which way to fix it is a naming decision, not a technical
-one. See `db/migrations/003_seed_defaults.sql`.
 
 **Single currency per store.** Revenue is summed in the store's own currency
 with no conversion. A store selling in several currencies would see figures
