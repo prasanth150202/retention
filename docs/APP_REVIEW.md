@@ -16,11 +16,107 @@ Nothing below can be done from the code side.
 
 | # | What | Why it is blocking |
 |---|---|---|
-| 1 | **Partner Dashboard `client_id` and `client_secret`** for the `retention-dashboard` app | Without them `shopify app config link` and `shopify app deploy` cannot run, so the web pixel extension and webhook subscriptions are never registered. Nothing installs. |
-| 2 | **Request `read_all_orders`** for this app | It does **not** transfer from the earlier custom app. Without it the Admin API silently returns 60 days of orders and every cohort and repeat-purchase figure comes out wrong rather than empty — which is worse, because it looks plausible. Partner Dashboard → the app → API access → request, with a written justification. |
-| 3 | **The price** | Currency decided: **USD**. `BILLING_PRICE` is still a placeholder (19.00) and must match the listing exactly — a mismatch is a rejection. |
-| 4 | **Rotate the credentials pasted into chat** | The database passwords and the old app's `shpss_…` secret. Assume they are compromised. |
+| 1 | **Create the app and get its credentials** | Without them nothing installs. Step-by-step in 1.1 below. |
+| 2 | **Request `read_all_orders`** | It does **not** transfer from the earlier custom app. Step-by-step and a ready-to-paste justification in 1.2 below. |
+| 3 | **Request protected customer data access** | Needed for `read_customers`. Same page as 1.2. See 1.3. |
+| 4 | **Rotate the credentials pasted into chat** | The database passwords and the old app's `shpss_…` secret. Assume they are compromised. Deferred by decision, not done. |
 | 5 | **Listing copy, icon and screenshots** | Section 5 below lists what is needed. |
+
+Price is settled: **USD 19.00/month**, 14-day trial. Already the default in
+`config/config.php`; no `.env` entry is needed unless it changes. It must match
+the App Store listing exactly — a mismatch is a rejection.
+
+### 1.1 Create the app and get `client_id` / `client_secret`
+
+Shopify's own guidance is that App Store apps are created **through the CLI**,
+not by hand in the dashboard — the CLI creates the app, writes the config, and
+registers the extensions in one place. This project is already a CLI project,
+so it is three commands.
+
+```bash
+cd shopify
+npx shopify auth login          # opens a browser
+npx shopify app config link     # creates or links the app
+npx shopify app deploy          # pushes config + the web pixel extension
+```
+
+At `config link`:
+
+- choose your organisation
+- choose **Create a new app** (not one of the existing custom apps — the old
+  one's scopes and `read_all_orders` grant do not carry over)
+- name it `retention-dashboard`
+- **if it offers to write a differently named config file** (for example
+  `shopify.app.retention-dashboard.toml`), let it, and say so — the repo
+  currently expects `shopify.app.toml` and the two need reconciling.
+
+`config link` fills in the `client_id`, which is currently blank on line 23.
+A client id is not a secret and is committed to git deliberately.
+
+Then the secret:
+
+- Dev Dashboard → **Apps** → `retention-dashboard` → **Settings** → **Credentials**
+- copy the **Client ID** and **Client secret**
+
+Both go in the server's `.env` — never in git:
+
+```
+SHOPIFY_CLIENT_ID=<client id>
+SHOPIFY_CLIENT_SECRET=<client secret>
+```
+
+The client secret is also what Shopify signs webhooks with, so the app cannot
+verify a single webhook until it is set.
+
+### 1.2 Request `read_all_orders`
+
+By default the Admin API returns only the last 60 days of orders. This app
+cannot work on that: every cohort, repeat-rate and lifetime-value figure is a
+statement about a customer's **first** order, and a customer whose first order
+predates the window is silently counted as a brand new one. The result is not
+missing data, it is wrong data that looks plausible.
+
+- Partner Dashboard → **Apps** → `retention-dashboard` → **API access**
+- under **Access requests**, find the **Read all orders** card → **Request access**
+- describe the app and why, then submit
+
+Something like the following, which is accurate to what this app actually does:
+
+> retention-dashboard is a retention analytics app for Shopify merchants. Its
+> core function is repeat-purchase and cohort analysis: for every customer it
+> determines their first, second and third order, the time between them, and
+> the share of each monthly acquisition cohort that orders again within 30, 60,
+> 90 and 180 days.
+>
+> All of those figures depend on knowing a customer's first order. Restricted to
+> the default 60-day window, any customer whose first purchase predates that
+> window is indistinguishable from a new customer, so the repeat-purchase rate
+> is understated and returning customers are miscounted as new. The app cannot
+> report a correct retention figure for any store without full order history.
+>
+> Data handling: order history is read once at install and then kept current by
+> webhook and an hourly incremental sync. Customer email and phone are hashed
+> with HMAC-SHA256 under a per-store salt at the moment they arrive and the
+> plaintext is never written to storage. All data for a store is deleted on the
+> shop/redact webhook and after a configurable retention period following
+> uninstall.
+
+File this early. It is reviewed by a person and it blocks nothing else, so
+there is no reason for it to sit on the critical path.
+
+### 1.3 Request protected customer data access
+
+`read_customers` is protected. It is requested from the same **API access**
+page, and it is what lets the app read the email and phone it hashes for
+identity matching — the thing that makes a guest checkout and a later account
+count as one person rather than two.
+
+Worth knowing: since December 2025 Shopify also gates *web pixel* access to
+customer PII behind this same approval. **That does not break this app.** The
+pixel deliberately reads no email or phone at all; the only gated field it
+touches is `init.data.customer.id`, and it already handles that being null.
+Without the approval the app loses some cross-device matching for logged-in
+browsing and nothing else.
 
 ---
 
