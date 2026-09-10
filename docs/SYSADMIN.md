@@ -283,3 +283,64 @@ history is permanent and they may subscribe later. Data for stores that
 `billing_events` is not an accounting record. Shopify is the authority on what
 was actually charged. It exists so a question about a charge has something to
 look at.
+
+---
+
+## 9. Two database settings that matter
+
+### Strict mode is set by the application, not the server
+
+The Hostinger MySQL server runs **without** strict mode:
+
+```
+NO_AUTO_CREATE_USER,NO_ENGINE_SUBSTITUTION
+```
+
+Without strict mode MySQL does not reject a value that will not fit — it
+coerces it and carries on. An order total larger than its column is clamped to
+the column maximum, an over-long string is truncated, an impossible date
+becomes zeroes. Each writes a wrong number with no error anywhere, and every
+figure derived from it is then confidently incorrect.
+
+The application therefore sets strict mode **on every connection it opens**, so
+it does not depend on how the server is tuned:
+
+```sql
+SET SESSION sql_mode = 'STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'
+```
+
+Nothing needs doing about this. It is written down because if somebody ever
+changes the server's global mode, or wonders why an insert now errors where it
+used to pass, this is why — and the erroring version is the correct one.
+
+`bin/selftest.php` verifies it by writing an out-of-range value to a temporary
+table and requiring the write to fail.
+
+### If a value ever is too large
+
+`orders.total_minor` is `INT UNSIGNED`: about ₹4.29 crore, or $42.9M, for a
+single order. Beyond any plausible order for this market. With strict mode on,
+an order above it fails loudly and appears in `job_runs` rather than being
+silently clamped — so if that ever shows up in the health check, the column
+needs widening to `BIGINT UNSIGNED`, not the strictness relaxing.
+
+---
+
+## 10. A new store's first events
+
+The ingest endpoint resolves a store's write key from a generated file
+(`storage/tenants.php`) rather than a database query, so that a page view never
+touches MySQL. That file is rewritten:
+
+- by `import.php`, every run, and
+- by the OAuth callback, the moment a store installs.
+
+The second one matters. On a key it does not recognise the endpoint rebuilds
+the file — but not if it was rebuilt in the last minute, because otherwise
+anyone posting random keys could force a query and a file write per request. A
+store that installed inside that minute would have its first events refused,
+and the pixel uses `sendBeacon`, which does not retry.
+
+If a newly installed store appears to be collecting nothing, check that
+`storage/tenants.php` exists, is writable, and contains that store's write key.
+Running `import.php` by hand rebuilds it.
