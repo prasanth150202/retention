@@ -1195,6 +1195,8 @@ echo "\nDeletion\n";
 
 if ($envFile !== null) {
     skip('deleting a store leaves nothing behind', 'plants two stores; local runs only');
+    skip('redacting a customer removes their traces', 'local runs only');
+    skip('a redacted customer is not rebuilt', 'local runs only');
     skip('deleting one store spares the next', 'local runs only');
 } else {
     $pgPdo   = Db::core();
@@ -1334,6 +1336,196 @@ if ($envFile !== null) {
         assertTrue($spool === [], count($spool) . ' spool file(s) survived');
 
         return count($pgBeforeA) . ' tables emptied, events and spool gone';
+    });
+
+    check('redacting a customer removes their traces', function () use ($pgPdo) {
+        // customers/redact is mandatory and had no test. The question is not
+        // whether it runs but whether the person is actually gone — and
+        // whether everybody else is still here.
+        $shop = 'selftest-redact.myshopify.com';
+        $pgPdo->prepare('DELETE FROM tenants WHERE shop_domain = ?')->execute([$shop]);
+
+        $t = Tenant::upsert($shop, [
+            'access_token'             => 'selftest',
+            'refresh_token'            => 'selftest',
+            'expires_in'               => 3600,
+            'refresh_token_expires_in' => 7776000,
+        ], 'read_orders');
+        Tenant::forgetCache();
+
+        $target = ['id' => 4001, 'email' => 'priya@example.com', 'phone' => '9876500001'];
+        $other  = ['id' => 4002, 'email' => 'someone@example.com', 'phone' => '9876500002'];
+
+        $put = static function (int $id, array $who, string $ago, bool $account) use ($pgPdo, $t): void {
+            $pgPdo->prepare(
+                "INSERT INTO orders (tenant_id, order_id, shopify_customer_id, email_hash,
+                                     phone_hash, created_at, currency, total_minor, synced_at)
+                 VALUES (?, ?, ?, ?, ?, ?, 'INR', 100000, UTC_TIMESTAMP())"
+            )->execute([
+                $t, $id, $account ? $who['id'] : null,
+                Hash::pii($t, (string) Hash::normaliseEmail($who['email'])),
+                Hash::pii($t, (string) Hash::normalisePhone($who['phone'])),
+                gmdate('Y-m-d H:i:s', strtotime($ago)),
+            ]);
+        };
+
+        try {
+            $put(500, $target, '-30 days', false);   // guest
+            $put(501, $target, '-10 days', true);    // later, with an account
+            $put(502, $other, '-20 days', true);
+
+            foreach ([$target, $other] as $who) {
+                $pgPdo->prepare('INSERT INTO customers (tenant_id, shopify_customer_id, synced_at)
+                                 VALUES (?,?,UTC_TIMESTAMP())')->execute([$t, $who['id']]);
+            }
+
+            $pgPdo->prepare(
+                "INSERT INTO abandoned_checkouts (tenant_id, checkout_id, email_hash, phone_hash,
+                                                  created_at, total_minor, synced_at)
+                 VALUES (?,?,?,?,?,50000,UTC_TIMESTAMP())"
+            )->execute([
+                $t, 9500,
+                Hash::pii($t, (string) Hash::normaliseEmail($target['email'])),
+                Hash::pii($t, (string) Hash::normalisePhone($target['phone'])),
+                gmdate('Y-m-d H:i:s', strtotime('-15 days')),
+            ]);
+
+            $visitor = Dim::visitor($t, 'redact-visitor');
+            $pgPdo->prepare('UPDATE orders SET visitor_key = ? WHERE tenant_id = ? AND order_id = ?')
+                ->execute([$visitor, $t, 501]);
+
+            foreach (Identity::unresolved($t, 50) as $o) { Identity::resolveOrder($t, $o); }
+            foreach (Identity::pendingResequence($t, 50) as $p) { Identity::resequence($t, $p); }
+            Identity::linkVisitors($t, 50);
+
+            $person = static function (int $order) use ($pgPdo, $t): ?int {
+                $q = $pgPdo->prepare('SELECT person_id FROM orders WHERE tenant_id = ? AND order_id = ?');
+                $q->execute([$t, $order]);
+                $v = $q->fetchColumn();
+
+                return $v === null || $v === false ? null : (int) $v;
+            };
+
+            $targetPerson = $person(500);
+            $otherPerson  = $person(502);
+            assertTrue($targetPerson !== null && $targetPerson !== $otherPerson, 'fixture did not separate them');
+
+            Purge::customer($t, $target['id'], $target['email'], $target['phone']);
+
+            $emailHash = Hash::pii($t, (string) Hash::normaliseEmail($target['email']));
+            $phoneHash = Hash::pii($t, (string) Hash::normalisePhone($target['phone']));
+
+            $count = static function (string $sql, array $a) use ($pgPdo): int {
+                $q = $pgPdo->prepare($sql);
+                $q->execute($a);
+
+                return (int) $q->fetchColumn();
+            };
+
+            // Gone.
+            assertTrue($count('SELECT COUNT(*) FROM identity_keys WHERE tenant_id=? AND key_hash IN (?,?)',
+                [$t, $emailHash, $phoneHash]) === 0, 'identity keys survived');
+            assertTrue($count('SELECT COUNT(*) FROM persons WHERE tenant_id=? AND person_id=?',
+                [$t, $targetPerson]) === 0, 'the person survived');
+            assertTrue($count('SELECT COUNT(*) FROM customers WHERE tenant_id=? AND shopify_customer_id=?',
+                [$t, $target['id']]) === 0, 'the customer row survived');
+            assertTrue($count('SELECT COUNT(*) FROM orders WHERE tenant_id=? AND (email_hash=? OR phone_hash=?)',
+                [$t, $emailHash, $phoneHash]) === 0, 'their contact hashes survived on the orders');
+            assertTrue($count('SELECT COUNT(*) FROM abandoned_checkouts WHERE tenant_id=? AND (email_hash=? OR phone_hash=?)',
+                [$t, $emailHash, $phoneHash]) === 0, 'their contact hashes survived on an abandoned cart');
+            assertTrue($count('SELECT COUNT(*) FROM dim_visitor WHERE tenant_id=? AND person_id=?',
+                [$t, $targetPerson]) === 0, 'a visitor still points at the deleted person');
+
+            // Kept: the money is the merchant's record, not the customer's.
+            assertTrue($count('SELECT COUNT(*) FROM orders WHERE tenant_id=?', [$t]) === 3,
+                'orders were deleted along with the customer');
+            assertTrue($count('SELECT COUNT(*) FROM persons WHERE tenant_id=? AND person_id=?',
+                [$t, $otherPerson]) === 1, 'the other shopper was caught up in it');
+            assertTrue($count('SELECT COUNT(*) FROM orders WHERE tenant_id=? AND person_id=?',
+                [$t, $otherPerson]) === 1, 'the other shopper lost their order link');
+
+            return 'identity gone, revenue kept, neighbour untouched';
+        } finally {
+            $pgPdo->prepare('DELETE FROM tenants WHERE shop_domain = ?')->execute([$shop]);
+        }
+    });
+
+    check('a redacted customer is not rebuilt', function () use ($pgPdo) {
+        // The one that matters most. Deleting the person while leaving
+        // email_hash and phone_hash on their orders redacts nothing: those
+        // columns are exactly what identity resolution reads, so the next run
+        // of the identity job reassembles the same customer from the same
+        // orders in the same sequence. The deletion undoes itself within the
+        // hour, and nothing reports it.
+        $shop = 'selftest-redact-rebuild.myshopify.com';
+        $pgPdo->prepare('DELETE FROM tenants WHERE shop_domain = ?')->execute([$shop]);
+
+        $t = Tenant::upsert($shop, [
+            'access_token'             => 'selftest',
+            'refresh_token'            => 'selftest',
+            'expires_in'               => 3600,
+            'refresh_token_expires_in' => 7776000,
+        ], 'read_orders');
+        Tenant::forgetCache();
+
+        $email = 'priya@example.com';
+        $phone = '9876500001';
+
+        try {
+            foreach ([[601, '-30 days'], [602, '-10 days']] as [$id, $ago]) {
+                $pgPdo->prepare(
+                    "INSERT INTO orders (tenant_id, order_id, shopify_customer_id, email_hash,
+                                         phone_hash, created_at, currency, total_minor, synced_at)
+                     VALUES (?, ?, 4001, ?, ?, ?, 'INR', 100000, UTC_TIMESTAMP())"
+                )->execute([
+                    $t, $id,
+                    Hash::pii($t, (string) Hash::normaliseEmail($email)),
+                    Hash::pii($t, (string) Hash::normalisePhone($phone)),
+                    gmdate('Y-m-d H:i:s', strtotime($ago)),
+                ]);
+            }
+
+            $resolve = static function () use ($t): void {
+                foreach (Identity::unresolved($t, 50) as $o) { Identity::resolveOrder($t, $o); }
+                foreach (Identity::pendingResequence($t, 50) as $p) { Identity::resequence($t, $p); }
+            };
+
+            $resolve();
+
+            $q = $pgPdo->prepare('SELECT person_id FROM orders WHERE tenant_id = ? ORDER BY order_id');
+            $q->execute([$t]);
+            $before = $q->fetchAll(PDO::FETCH_COLUMN);
+            assertTrue(
+                $before[0] !== null && $before[0] === $before[1],
+                'the fixture did not link the two orders to one person'
+            );
+
+            Purge::customer($t, 4001, $email, $phone);
+
+            // Three runs, because one is not proof against a queue draining
+            // slowly.
+            $resolve();
+            $resolve();
+            $resolve();
+
+            $q->execute([$t]);
+            $after = $q->fetchAll(PDO::FETCH_COLUMN);
+
+            assertTrue(
+                $after[0] !== $after[1],
+                'the two orders were re-linked into one profile again (person ' . $after[0] . ')'
+            );
+
+            $left = $pgPdo->prepare(
+                'SELECT COUNT(*) FROM orders WHERE tenant_id = ? AND (email_hash IS NOT NULL OR phone_hash IS NOT NULL)'
+            );
+            $left->execute([$t]);
+            assertTrue((int) $left->fetchColumn() === 0, 'a contact hash came back');
+
+            return 'stays unlinked across repeated identity runs';
+        } finally {
+            $pgPdo->prepare('DELETE FROM tenants WHERE shop_domain = ?')->execute([$shop]);
+        }
     });
 
     check('deleting one store spares the next', function () use (

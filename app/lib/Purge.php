@@ -160,65 +160,159 @@ final class Purge
     ): array {
         $pdo     = Db::core();
         $deleted = 0;
-        $persons = [];
 
+        // The hashes this person is known by. Contact details are never stored
+        // in the clear, so redaction works by recomputing the same hashes and
+        // removing what they point at.
         $hashes = [];
 
-        if (is_string($email)) {
-            $n = Hash::normaliseEmail($email);
-            if ($n !== null) {
-                $hashes[] = Hash::pii($tenantId, $n);
+        foreach ([
+            [$email, 'normaliseEmail'],
+            [$phone, 'normalisePhone'],
+        ] as [$value, $normalise]) {
+            if (is_string($value)) {
+                $n = Hash::$normalise($value);
+                if ($n !== null) {
+                    $hashes[] = Hash::pii($tenantId, $n);
+                }
             }
         }
-        if (is_string($phone)) {
-            $n = Hash::normalisePhone($phone);
-            if ($n !== null) {
-                $hashes[] = Hash::pii($tenantId, $n);
-            }
-        }
+
         if ($shopifyCustomerId !== null) {
             $hashes[] = Hash::pii($tenantId, (string) $shopifyCustomerId);
         }
 
-        foreach ($hashes as $hash) {
-            $find = $pdo->prepare(
-                'SELECT person_id FROM identity_keys WHERE tenant_id = ? AND key_hash = ?'
-            );
-            $find->execute([$tenantId, $hash]);
-            foreach ($find->fetchAll() as $row) {
-                $persons[(int) $row['person_id']] = true;
-            }
+        // ---------------------------------------------------------------
+        // Who is this, in our terms?
+        // ---------------------------------------------------------------
+        $persons = [];
 
-            $del = $pdo->prepare('DELETE FROM identity_keys WHERE tenant_id = ? AND key_hash = ?');
+        $find = $pdo->prepare(
+            'SELECT person_id FROM identity_keys WHERE tenant_id = ? AND key_hash = ?'
+        );
+
+        foreach ($hashes as $hash) {
+            $find->execute([$tenantId, $hash]);
+            foreach ($find->fetchAll(PDO::FETCH_COLUMN) as $p) {
+                $persons[(int) $p] = true;
+            }
+        }
+
+        $persons = array_keys($persons);
+
+        // ---------------------------------------------------------------
+        // The identity layer
+        // ---------------------------------------------------------------
+        $del = $pdo->prepare('DELETE FROM identity_keys WHERE tenant_id = ? AND key_hash = ?');
+        foreach ($hashes as $hash) {
             $del->execute([$tenantId, $hash]);
             $deleted += $del->rowCount();
         }
 
         if ($shopifyCustomerId !== null) {
-            $del = $pdo->prepare(
-                'DELETE FROM customers WHERE tenant_id = ? AND shopify_customer_id = ?'
-            );
-            $del->execute([$tenantId, $shopifyCustomerId]);
-            $deleted += $del->rowCount();
+            $c = $pdo->prepare('DELETE FROM customers WHERE tenant_id = ? AND shopify_customer_id = ?');
+            $c->execute([$tenantId, $shopifyCustomerId]);
+            $deleted += $c->rowCount();
+        }
 
+        // ---------------------------------------------------------------
+        // The orders keep their money and lose their owner.
+        //
+        // CLEARING THE HASHES IS THE PART THAT MATTERS. Removing the person
+        // row while leaving email_hash and phone_hash on the orders does not
+        // redact anything: those columns are precisely what identity
+        // resolution reads, so the next run of the identity job rebuilds the
+        // same customer, with the same orders in the same sequence, within the
+        // hour. The deletion undoes itself.
+        //
+        // They are also personal data in their own right while the salt exists
+        // — the same address always produces the same hash, so the person
+        // remains findable by anyone who can guess or supply the address.
+        // ---------------------------------------------------------------
+        // Two condition sets, because the two tables do not carry the same
+        // columns: abandoned_checkouts has no shopify_customer_id.
+        $orderWhere = [];
+        $orderArgs  = [$tenantId];
+        $cartWhere  = [];
+        $cartArgs   = [$tenantId];
+
+        if ($shopifyCustomerId !== null) {
+            $orderWhere[] = 'shopify_customer_id = ?';
+            $orderArgs[]  = $shopifyCustomerId;
+        }
+
+        foreach ($hashes as $hash) {
+            foreach (['email_hash = ?', 'phone_hash = ?'] as $clause) {
+                $orderWhere[] = $clause;
+                $orderArgs[]  = $hash;
+                $cartWhere[]  = $clause;
+                $cartArgs[]   = $hash;
+            }
+        }
+
+        foreach ($persons as $personId) {
+            $orderWhere[] = 'person_id = ?';
+            $orderArgs[]  = $personId;
+            $cartWhere[]  = 'person_id = ?';
+            $cartArgs[]   = $personId;
+        }
+
+        if ($orderWhere !== []) {
             $upd = $pdo->prepare(
-                'UPDATE orders SET shopify_customer_id = NULL, person_id = NULL
-                  WHERE tenant_id = ? AND shopify_customer_id = ?'
+                'UPDATE orders
+                    SET shopify_customer_id = NULL, person_id = NULL,
+                        email_hash = NULL, phone_hash = NULL
+                  WHERE tenant_id = ? AND (' . implode(' OR ', $orderWhere) . ')'
             );
-            $upd->execute([$tenantId, $shopifyCustomerId]);
+            $upd->execute($orderArgs);
             $deleted += $upd->rowCount();
         }
 
-        foreach (array_keys($persons) as $personId) {
-            $upd = $pdo->prepare(
-                'UPDATE orders SET person_id = NULL WHERE tenant_id = ? AND person_id = ?'
+        if ($cartWhere !== []) {
+            // Abandoned checkouts are the most sensitive rows here: a cart
+            // nobody completed, attached to somebody who has asked to be
+            // forgotten.
+            $cart = $pdo->prepare(
+                'UPDATE abandoned_checkouts
+                    SET person_id = NULL, email_hash = NULL, phone_hash = NULL
+                  WHERE tenant_id = ? AND (' . implode(' OR ', $cartWhere) . ')'
             );
-            $upd->execute([$tenantId, $personId]);
-            $deleted += $upd->rowCount();
+            $cart->execute($cartArgs);
+            $deleted += $cart->rowCount();
+        }
+        // ---------------------------------------------------------------
+        // Anything still pointing at the person
+        // ---------------------------------------------------------------
+        foreach ($persons as $personId) {
+            // A browser attached to this person. Left in place it is a live
+            // pointer at a deleted person, and a way back to their history.
+            $v = $pdo->prepare(
+                'UPDATE dim_visitor SET person_id = NULL WHERE tenant_id = ? AND person_id = ?'
+            );
+            $v->execute([$tenantId, $personId]);
+            $deleted += $v->rowCount();
 
-            $del = $pdo->prepare('DELETE FROM persons WHERE tenant_id = ? AND person_id = ?');
-            $del->execute([$tenantId, $personId]);
-            $deleted += $del->rowCount();
+            $cst = $pdo->prepare(
+                'UPDATE customers SET person_id = NULL WHERE tenant_id = ? AND person_id = ?'
+            );
+            $cst->execute([$tenantId, $personId]);
+            $deleted += $cst->rowCount();
+
+            // The merge log records that two identities were the same person.
+            // That is a statement about them, so it goes too.
+            $m = $pdo->prepare(
+                'DELETE FROM person_merges
+                  WHERE tenant_id = ? AND (survivor_id = ? OR absorbed_id = ?)'
+            );
+            $m->execute([$tenantId, $personId, $personId]);
+            $deleted += $m->rowCount();
+
+            $q = $pdo->prepare('DELETE FROM resequence_queue WHERE tenant_id = ? AND person_id = ?');
+            $q->execute([$tenantId, $personId]);
+
+            $p = $pdo->prepare('DELETE FROM persons WHERE tenant_id = ? AND person_id = ?');
+            $p->execute([$tenantId, $personId]);
+            $deleted += $p->rowCount();
         }
 
         return ['deleted' => $deleted, 'persons' => count($persons)];
