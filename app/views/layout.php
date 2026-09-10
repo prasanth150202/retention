@@ -258,7 +258,17 @@ $nav  = $nav ?? 'stores';
       <a href="<?= htmlspecialchars($href) ?>" class="<?= $nav === ($slug === '' ? 'dashboard' : $slug) ? 'on' : '' ?>"><?= $name ?></a>
     <?php endforeach; ?>
   </nav>
-  <span class="who"><?= htmlspecialchars((string) $merchant['shop_domain']) ?></span>
+  <span class="who">
+    <?php
+    // Not a tab. Billing is something a merchant visits twice a year, and
+    // giving it equal weight with the reports would say the wrong thing about
+    // what this page is for.
+    if (class_exists('Billing') && Billing::enabled()):
+    ?>
+      <a href="/?p=plan"<?= $nav === 'plan' ? ' style="color:var(--fg)"' : '' ?>>Plan</a> ·
+    <?php endif; ?>
+    <?= htmlspecialchars((string) $merchant['shop_domain']) ?>
+  </span>
 </header>
 <?php elseif ($user): ?>
 <header>

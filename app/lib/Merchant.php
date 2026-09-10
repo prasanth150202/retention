@@ -33,6 +33,20 @@ final class Merchant
             return;
         }
 
+        // A session cannot be opened once anything has been sent, and PHP
+        // raises a warning rather than telling the caller. In a real request
+        // this never happens — index.php establishes the session before a byte
+        // of output — but rendering a view outside one (a CLI test, an error
+        // page written after output has begun) would otherwise die on a
+        // warning about session names.
+        //
+        // Failing closed is safe: with no session there is no CSRF token, so
+        // csrfCheck() rejects, which is the right answer for a request that
+        // could not have carried a valid one.
+        if (headers_sent() || PHP_SAPI === 'cli') {
+            return;
+        }
+
         session_name(self::SESSION_NAME);
         session_set_cookie_params([
             'lifetime' => 0,
@@ -137,6 +151,55 @@ final class Merchant
     {
         $id = self::tenantId();
         return $id === null ? null : Tenant::find($id);
+    }
+
+    // -----------------------------------------------------------------
+    // CSRF
+    //
+    // Its own pair rather than Auth's. PHP allows one session per request and
+    // the two audiences use different session names, so borrowing Auth's
+    // helpers here would work only by accident — whichever session happened
+    // to be open would hold the token. A merchant subscribing to a paid plan
+    // is not a place to rely on that.
+    // -----------------------------------------------------------------
+
+    public static function csrfToken(): string
+    {
+        self::start();
+
+        if (session_status() !== PHP_SESSION_ACTIVE) {
+            // No session to store it in, so any token handed out here could
+            // never validate. Return one anyway rather than throwing — the
+            // form still renders, and the POST is refused, which is correct.
+            return str_repeat('0', 64);
+        }
+
+        return $_SESSION['m_csrf'] ??= bin2hex(random_bytes(32));
+    }
+
+    public static function csrfField(): string
+    {
+        return '<input type="hidden" name="_csrf" value="'
+            . htmlspecialchars(self::csrfToken(), ENT_QUOTES, 'UTF-8') . '">';
+    }
+
+    /**
+     * Verify the token on any state-changing request.
+     *
+     * SameSite=Lax already blocks most cross-site POSTs, but that is a browser
+     * behaviour rather than a guarantee, and this particular POST starts a
+     * recurring charge.
+     */
+    public static function csrfCheck(): void
+    {
+        self::start();
+
+        $sent = (string) ($_POST['_csrf'] ?? '');
+
+        if (!isset($_SESSION['m_csrf']) || !hash_equals($_SESSION['m_csrf'], $sent)) {
+            http_response_code(419);
+            exit('Session expired. Go back, reload the page and try again.');
+        }
     }
 
     public static function logout(): void

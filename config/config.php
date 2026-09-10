@@ -206,8 +206,68 @@ return [
         // runs it.
     ],
 
+    // -----------------------------------------------------------------
+    // Billing
+    //
+    // Shopify owns the subscription: it runs the trial, takes the money,
+    // retries failed payments and cancels on uninstall. The app's whole
+    // job is to create the subscription, send the merchant to Shopify to
+    // approve it, and read back what Shopify says the state is. Anything
+    // more would be a second source of truth about money.
+    //
+    // A public app MAY NOT charge outside the Billing API, so there is no
+    // alternative to design against.
+    // -----------------------------------------------------------------
+    'billing' => [
+        // OFF by default, deliberately. An app that gates the dashboard
+        // before it is listed locks out its own test stores, and the first
+        // symptom is a blank screen nobody can explain. Turn it on in .env
+        // when the listing is ready.
+        'enabled' => Env::bool('BILLING_ENABLED', false),
+
+        // A test subscription bills nothing and is what development and
+        // Shopify's own review run on. It MUST be false in production, and
+        // Billing::state() reports a test subscription as such so a paying
+        // store is never confused with a free one.
+        'test' => Env::bool('BILLING_TEST', false),
+
+        'trial_days' => Env::int('BILLING_TRIAL_DAYS', 14),
+
+        // The plans a merchant can choose. One for now: a second tier is a
+        // pricing decision, not a code change, and inventing tiers before
+        // anyone has paid for the first is how a product ends up defending
+        // a feature split nobody asked for.
+        //
+        // PRICE IS A BUSINESS DECISION AND THIS IS A PLACEHOLDER.
+        // Set BILLING_PRICE in .env before listing. Shopify bills app
+        // subscriptions in the currency set here, not the store's.
+        'plans' => [
+            'standard' => [
+                'name'     => 'Retention Dashboard',
+                'price'    => Env::get('BILLING_PRICE', '19.00'),
+                'currency' => Env::get('BILLING_CURRENCY', 'USD'),
+                'interval' => 'EVERY_30_DAYS',
+                'blurb'    => 'Everything, for one store.',
+                'features' => [
+                    'Repeat purchase and cohort retention',
+                    'Campaign attribution under four models',
+                    'Funnel and checkout drop-off',
+                    'Product, geography and device reports',
+                    'Full history — nothing is sampled or aged out',
+                ],
+            ],
+        ],
+    ],
+
     // Everything is stored UTC. Display timezone is per-tenant.
     'app' => [
+        // The app's own public address, e.g. https://retention.digifyce.com
+        //
+        // Needed wherever a URL has to be absolute and there is no request to
+        // read it from: Shopify's billing return URL, and anything sent by
+        // cron. Left blank it is derived from the incoming request, which is
+        // right in a browser and impossible in a cron job.
+        'url'      => rtrim((string) Env::get('APP_URL', ''), '/'),
         'timezone' => 'UTC',
         'debug'    => Env::bool('APP_DEBUG', false),
     ],

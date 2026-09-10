@@ -94,11 +94,35 @@ try {
     exit(1);
 }
 
+// ---------------------------------------------------------------------
+// Billing: the backstop for a webhook that never arrived.
+//
+// app_subscriptions/update is the fast path and handles nearly everything.
+// This exists for the case it does not: a webhook lost, a delivery that
+// exhausted its retries, an endpoint that was down for an hour. Nobody should
+// discover they are locked out of a product they are paying for, so state is
+// re-read for any store not checked in the last few hours.
+//
+// Deliberately outside the sync lock's try block: a billing read failing must
+// not mark the order sync as failed, and vice versa.
+// ---------------------------------------------------------------------
+$billingChecked = 0;
+
+foreach (Billing::needingRefresh() as $tenantId) {
+    try {
+        Billing::syncFromShopify($tenantId);
+        $billingChecked++;
+    } catch (Throwable $e) {
+        // A store mid-reinstall has no usable token. Not worth an alarm.
+        $log("    billing read failed for tenant {$tenantId}: " . $e->getMessage());
+    }
+}
+
 Job::unlock('sync');
 
 printf(
-    "sync: %d store(s), %d order(s), %d failed\n",
-    $totals['tenants'], $totals['orders'], $totals['failed']
+    "sync: %d store(s), %d order(s), %d failed, %d billing state(s) refreshed\n",
+    $totals['tenants'], $totals['orders'], $totals['failed'], $billingChecked
 );
 
 exit($totals['failed'] > 0 ? 1 : 0);

@@ -137,6 +137,29 @@ switch ($page) {
         });
         break;
 
+    // --- Billing -----------------------------------------------------
+    case 'plan':
+        merchantPage('plan');
+        break;
+
+    case 'billing-return':
+        // Where Shopify sends the merchant after they approve or decline a
+        // charge. It carries no proof of the outcome, so nothing here trusts
+        // it — it is a prompt to go and ask Shopify what happened.
+        if (!Merchant::check()) {
+            header('Location: /?p=no-shop');
+            exit;
+        }
+
+        try {
+            Billing::syncFromShopify(Merchant::tenantId() ?? 0);
+        } catch (Throwable $e) {
+            error_log('billing return sync failed: ' . $e->getMessage());
+        }
+
+        header('Location: ' . (Billing::hasAccess(Merchant::tenantId() ?? 0) ? '/' : '/?p=plan'));
+        exit;
+
     // --- Merchant analytics ------------------------------------------
     case 'funnel':
     case 'campaigns':
@@ -194,6 +217,52 @@ function merchantPage(string $page): void
     }
 
     $tenantId = (int) $tenant['tenant_id'];
+    $billing  = Billing::state($tenantId);
+
+    // Billing gates the dashboard and nothing else. Tracking, syncing and
+    // rollups carry on for a lapsed store: data is cheap and a gap in history
+    // is permanent, so a merchant who subscribes two weeks late should find
+    // those two weeks waiting rather than missing.
+    if (!$billing['access'] && $page !== 'plan') {
+        header('Location: /?p=plan');
+        exit;
+    }
+
+    if ($page === 'plan') {
+        $error = null;
+
+        if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+            Merchant::csrfCheck();
+
+            try {
+                $started = Billing::subscribe(
+                    $tenantId,
+                    (string) ($_POST['plan'] ?? ''),
+                    appBaseUrl() . '/?p=billing-return'
+                );
+
+                // Only Shopify can take the approval, so the merchant goes to
+                // Shopify. Nothing about this should be disguised.
+                header('Location: ' . $started['confirm_url']);
+                exit;
+            } catch (Throwable $e) {
+                error_log('subscribe failed: ' . $e->getMessage());
+                $error = 'That could not be started just now. '
+                       . 'Nothing has been charged — please try again in a moment.';
+            }
+
+            $billing = Billing::state($tenantId, false);
+        }
+
+        render('Plan', 'plan', static function () use ($tenant, $billing, $error, $tenantId): void {
+            $plans   = Billing::plans();
+            $history = Billing::history($tenantId);
+            require dirname(__DIR__) . '/app/views/dash/plan.php';
+        });
+
+        return;
+    }
+
     $stats    = storeStats($tenantId);
     $hasData  = Report::hasData($tenantId);
     $range    = Report::range($tenantId, $_GET['from'] ?? null, $_GET['to'] ?? null);
@@ -264,6 +333,25 @@ function merchantPage(string $page): void
 function render(string $title, string $nav, callable $content): void
 {
     require dirname(__DIR__) . '/app/views/layout.php';
+}
+
+/**
+ * The app's own public address.
+ *
+ * Configured value wins; otherwise it comes from the request. Always https —
+ * Shopify rejects a plain-http return URL, and this app is only ever served
+ * over TLS, so a scheme guessed from $_SERVER would be wrong more often than
+ * right behind a proxy that terminates it.
+ */
+function appBaseUrl(): string
+{
+    $configured = rtrim((string) Config::get('app.url', ''), '/');
+
+    if ($configured !== '') {
+        return $configured;
+    }
+
+    return 'https://' . (string) ($_SERVER['HTTP_HOST'] ?? 'localhost');
 }
 
 /**

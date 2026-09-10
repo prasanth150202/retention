@@ -598,23 +598,53 @@ check('webhook scheme differs from OAuth scheme', function () use ($hookBody, $h
 // -----------------------------------------------------------------
 echo "\nMerchant session\n";
 
-check('unsigned request creates no session', function () {
+check('no session without app credentials', function () {
+    // An app with no client secret cannot verify anything, so it must not
+    // establish sessions on trust. This is also the state a fresh checkout is
+    // in, which is why it is asserted rather than assumed.
+    if (ShopifyOAuth::configured()) {
+        return 'credentials present; see the signed-request checks below';
+    }
+
     assertTrue(
-        Merchant::fromSignedRequest(['shop' => 'demo.myshopify.com'], 'shop=demo.myshopify.com') === null,
-        'a session was created without a signature'
+        Merchant::fromSignedRequest(
+            ['shop' => 'demo.myshopify.com', 'hmac' => str_repeat('a', 64)],
+            'hmac=' . str_repeat('a', 64) . '&shop=demo.myshopify.com'
+        ) === null,
+        'a session was created with no secret to verify against'
     );
-    return 'correctly refused';
+
+    return 'refuses to trust anything';
 });
-check('stale signed request refused', function () use ($signed) {
-    // A signed URL is a bearer credential while it verifies. Bounding its age
-    // means one leaked into a browser history or a support ticket expires.
-    $secret = 'shpss_merchant_test_secret_012345';
-    $old    = ['shop' => 'demo.myshopify.com', 'timestamp' => (string) (time() - 8000)];
-    $qs     = $signed($old, $secret);
-    parse_str($qs, $parsed);
-    assertTrue(Merchant::fromSignedRequest($parsed, $qs) === null, 'a stale link was accepted');
-    return 'correctly refused';
-});
+
+// The two below exercise Merchant::fromSignedRequest() end to end, which needs
+// a configured client secret — it refuses before reaching the signature check
+// without one. They are SKIPPED rather than quietly passing when it is absent:
+// a green tick for a code path that returned early at the second line is worse
+// than no tick at all, because it reads as proof the signature was checked.
+if (!ShopifyOAuth::configured()) {
+    skip('unsigned request creates no session', 'needs SHOPIFY_CLIENT_SECRET; HMAC itself is covered above');
+    skip('stale signed request refused', 'needs SHOPIFY_CLIENT_SECRET');
+} else {
+    check('unsigned request creates no session', function () {
+        assertTrue(
+            Merchant::fromSignedRequest(['shop' => 'demo.myshopify.com'], 'shop=demo.myshopify.com') === null,
+            'a session was created without a signature'
+        );
+        return 'correctly refused';
+    });
+    check('stale signed request refused', function () use ($signed) {
+        // A signed URL is a bearer credential while it verifies. Bounding its
+        // age means one leaked into a browser history or a support ticket
+        // expires.
+        $secret = (string) Config::get('shopify.client_secret');
+        $old    = ['shop' => 'demo.myshopify.com', 'timestamp' => (string) (time() - 8000)];
+        $qs     = $signed($old, $secret);
+        parse_str($qs, $parsed);
+        assertTrue(Merchant::fromSignedRequest($parsed, $qs) === null, 'a stale link was accepted');
+        return 'correctly refused';
+    });
+}
 
 // -----------------------------------------------------------------
 echo "\nToken lifecycle\n";
@@ -1636,8 +1666,299 @@ if ($envFile !== null) {
 }
 
 // -----------------------------------------------------------------
+// Billing
+//
+// Getting this wrong costs money in one direction or locks a paying
+// merchant out in the other, and neither shows up as an error.
+echo "\nBilling\n";
+
+check('who can see the dashboard', function () {
+    // Every access rule in one pure function, so this is the whole of it.
+    $future = gmdate('Y-m-d H:i:s', time() + 5 * 86400);
+    $past   = gmdate('Y-m-d H:i:s', time() - 86400);
+
+    $cases = [
+        // stored,      trial ends,  expected status, expected access
+        ['active',      $future,     'trial',     true],
+        ['active',      $past,       'active',    true],
+        ['active',      null,        'active',    true],
+        ['pending',     null,        'pending',   false],
+        ['none',        null,        'none',      false],
+        // A failed payment is not access. Shopify retries and restores the
+        // subscription itself the moment one goes through.
+        ['frozen',      null,        'frozen',    false],
+        ['cancelled',   null,        'cancelled', false],
+        ['declined',    null,        'declined',  false],
+        ['expired',     null,        'expired',   false],
+        // A trial that has run out without a payment is not a trial.
+        ['cancelled',   $future,     'cancelled', false],
+    ];
+
+    foreach ($cases as [$stored, $trial, $wantStatus, $wantAccess]) {
+        $got = Billing::resolve($stored, $trial);
+
+        assertTrue(
+            $got['status'] === $wantStatus,
+            "{$stored} resolved to {$got['status']}, expected {$wantStatus}"
+        );
+        assertTrue(
+            $got['access'] === $wantAccess,
+            "{$stored} gave access=" . var_export($got['access'], true)
+                . ", expected " . var_export($wantAccess, true)
+        );
+    }
+
+    return count($cases) . ' states checked';
+});
+
+check('every Shopify status maps to one of ours', function () {
+    // AppSubscriptionStatus, from the Admin API. A status Shopify adds that we
+    // do not map falls through to 'none' and locks the merchant out, so the
+    // list is written down rather than assumed.
+    $shopify = ['ACTIVE', 'PENDING', 'FROZEN', 'CANCELLED', 'DECLINED', 'EXPIRED'];
+
+    $ref = new ReflectionClass(Billing::class);
+    $map = $ref->getConstant('STATUS_MAP');
+
+    assertTrue(is_array($map), 'STATUS_MAP is missing');
+
+    foreach ($shopify as $s) {
+        assertTrue(isset($map[$s]), "Shopify status {$s} is not mapped");
+    }
+
+    // And every mapped value has to be storable, or the UPDATE silently
+    // truncates to '' and the merchant is locked out with no explanation.
+    $column = Db::core()->query("SHOW COLUMNS FROM tenants LIKE 'billing_status'")->fetch();
+    $enum   = (string) ($column['Type'] ?? '');
+
+    foreach (array_unique(array_values($map)) as $ours) {
+        assertTrue(
+            str_contains($enum, "'{$ours}'"),
+            "billing_status has no '{$ours}' — the column enum and the map disagree"
+        );
+    }
+
+    return count($shopify) . ' statuses, all storable';
+});
+
+if ($envFile !== null) {
+    skip('a subscription webhook changes access', 'writes a test store; local runs only');
+    skip('the plan page renders in every state', 'local runs only');
+    skip('an unknown shop is ignored', 'local runs only');
+} else {
+    check('a subscription webhook changes access', function () {
+        $shop = 'selftest-billing.myshopify.com';
+        $pdo  = Db::core();
+        $pdo->prepare('DELETE FROM tenants WHERE shop_domain = ?')->execute([$shop]);
+
+        $t = Tenant::upsert($shop, [
+            'access_token'             => 'selftest',
+            'refresh_token'            => 'selftest',
+            'expires_in'               => 3600,
+            'refresh_token_expires_in' => 7776000,
+        ], 'read_orders');
+
+        $status = static function () use ($pdo, $t): string {
+            $s = $pdo->prepare('SELECT billing_status FROM tenants WHERE tenant_id = ?');
+            $s->execute([$t]);
+
+            return (string) $s->fetchColumn();
+        };
+
+        $send = static function (string $shopifyStatus) use ($shop): void {
+            Billing::applyWebhook($shop, ['app_subscription' => [
+                'admin_graphql_api_id' => 'gid://shopify/AppSubscription/123',
+                'name'                 => 'Retention Dashboard',
+                'status'               => $shopifyStatus,
+            ]]);
+        };
+
+        try {
+            assertTrue($status() === 'none', 'a new store did not start at none');
+
+            $send('PENDING');
+            assertTrue($status() === 'pending', 'PENDING gave ' . $status());
+
+            // The merchant approves. This is the moment the dashboard has to
+            // unlock, and the reason the webhook exists at all rather than
+            // waiting for the next scheduled read.
+            $send('ACTIVE');
+            assertTrue($status() === 'active', 'ACTIVE gave ' . $status());
+
+            // Their card fails later.
+            $send('FROZEN');
+            assertTrue($status() === 'frozen', 'FROZEN gave ' . $status());
+            assertTrue(!Billing::resolve('frozen', null)['access'], 'a frozen store kept access');
+
+            // A status we do not recognise must leave state alone rather than
+            // resetting it to none and locking out a paying merchant.
+            $send('SOMETHING_NEW');
+            assertTrue($status() === 'frozen', 'an unknown status overwrote a known one');
+
+            // Every change is recorded. A dispute about a charge needs
+            // something to look at.
+            $history = Billing::history($t);
+            $moves   = array_column($history, 'status_to');
+            assertTrue(
+                in_array('pending', $moves, true)
+                    && in_array('active', $moves, true)
+                    && in_array('frozen', $moves, true),
+                'transitions were not logged: ' . implode(',', $moves)
+            );
+
+            return count($history) . ' transitions logged';
+        } finally {
+            $pdo->prepare('DELETE FROM tenants WHERE shop_domain = ?')->execute([$shop]);
+        }
+    });
+
+        check('the plan page renders in every state', function () {
+        // Each of these is a real thing a merchant sees, and the states that
+        // matter most — a failed payment, a half-finished approval — are the
+        // ones nobody clicks through by hand.
+        $shop = 'selftest-planview.myshopify.com';
+        $pdo  = Db::core();
+        $pdo->prepare('DELETE FROM tenants WHERE shop_domain = ?')->execute([$shop]);
+
+        $t = Tenant::upsert($shop, [
+            'access_token'             => 'selftest',
+            'refresh_token'            => 'selftest',
+            'expires_in'               => 3600,
+            'refresh_token_expires_in' => 7776000,
+        ], 'read_orders');
+
+        set_error_handler(static function (int $no, string $msg, string $file, int $line): bool {
+            throw new ErrorException($msg . '  [' . basename($file) . ":{$line}]", 0, $no, $file, $line);
+        });
+
+        $states = [
+            'none'      => [null, null],
+            'pending'   => ['https://example.myshopify.com/admin/charges/1/confirm', null],
+            'trial'     => [null, gmdate('Y-m-d H:i:s', time() + 5 * 86400)],
+            'active'    => [null, null],
+            'frozen'    => [null, null],
+            'cancelled' => [null, null],
+            'declined'  => [null, null],
+            'expired'   => [null, null],
+        ];
+
+        $bytes = 0;
+
+        try {
+            foreach ($states as $status => [$confirm, $trialEnds]) {
+                $tenant  = Tenant::find($t);
+                $plans   = Billing::plans();
+                $history = Billing::history($t);
+                $error   = $status === 'declined' ? 'A deliberately shown error message.' : null;
+
+                $resolved = Billing::resolve($status === 'trial' ? 'active' : $status, $trialEnds);
+
+                $billing = [
+                    'status'             => $resolved['status'],
+                    'plan'               => 'standard',
+                    'access'             => $resolved['access'],
+                    'reason'             => 'Checked by the self-test.',
+                    'trial_ends_at'      => $trialEnds,
+                    'current_period_end' => $status === 'active' ? gmdate('Y-m-d H:i:s', time() + 20 * 86400) : null,
+                    'confirm_url'        => $confirm,
+                    'test'               => $status === 'active',
+                    'enabled'            => true,
+                ];
+
+                ob_start();
+                try {
+                    require dirname(__DIR__) . '/app/views/dash/plan.php';
+                    $html = (string) ob_get_clean();
+                } catch (Throwable $e) {
+                    ob_end_clean();
+                    throw new RuntimeException("{$status}: " . $e->getMessage());
+                }
+
+                assertTrue(trim($html) !== '', "{$status} rendered nothing");
+                $bytes += strlen($html);
+
+                // A merchant one click from paying must be offered that click,
+                // not a plan chooser telling them nothing is subscribed.
+                if ($status === 'pending') {
+                    assertTrue(
+                        str_contains($html, (string) $confirm),
+                        'the pending state did not offer the confirmation link'
+                    );
+                    assertTrue(
+                        !str_contains($html, 'Choose a plan'),
+                        'the pending state showed the plan chooser'
+                    );
+                }
+
+                // A failed payment is not a cancellation, and saying so is the
+                // difference between a merchant fixing a card and one deciding
+                // they have been cut off.
+                if ($status === 'frozen') {
+                    assertTrue(
+                        str_contains($html, 'still being collected'),
+                        'the frozen state did not say data is still being kept'
+                    );
+                }
+            }
+        } finally {
+            restore_error_handler();
+            $pdo->prepare('DELETE FROM tenants WHERE shop_domain = ?')->execute([$shop]);
+        }
+
+        return count($states) . ' states, ' . number_format($bytes) . ' bytes';
+    });
+
+    check('an unknown shop is ignored', function () {
+        // Webhooks arrive for stores that uninstalled, and for shops this
+        // deployment has never seen. Neither is an error worth a 500, which
+        // Shopify would retry for days.
+        $r = Billing::applyWebhook('never-installed.myshopify.com', [
+            'app_subscription' => ['status' => 'ACTIVE'],
+        ]);
+
+        assertTrue($r === null, 'an unknown shop returned ' . var_export($r, true));
+
+        return 'returns null, does not throw';
+    });
+}
+
+// -----------------------------------------------------------------
 echo "\nStorage headroom\n";
 
+check('no events belong to a store we no longer have', function () {
+    // Orphaned events are data for a store with no record — the exact thing a
+    // privacy review asks about, and something nothing else would notice. The
+    // production path (Purge) clears every shard before the tenant row goes,
+    // so anything here means a tenant was removed some other way.
+    //
+    // DISTINCT on tenant_id is the leading column of ix_tenant_time, so this
+    // is an index scan rather than a walk of every row.
+    $live   = array_map(
+        'intval',
+        Db::core()->query('SELECT tenant_id FROM tenants')->fetchAll(PDO::FETCH_COLUMN)
+    );
+    $orphans = [];
+    $shards  = 0;
+
+    foreach (Shard::all() as $shard) {
+        try {
+            $pdo = Shard::connectionForDate((string) $shard['date_from']);
+        } catch (Throwable) {
+            continue;
+        }
+        $shards++;
+
+        foreach ($pdo->query('SELECT DISTINCT tenant_id FROM events')->fetchAll(PDO::FETCH_COLUMN) as $t) {
+            if (!in_array((int) $t, $live, true)) {
+                $orphans[] = substr((string) $shard['date_from'], 0, 4) . ':tenant ' . (int) $t;
+            }
+        }
+    }
+
+    assertTrue($orphans === [], 'orphaned events in ' . implode(', ', $orphans));
+
+    return "{$shards} shard(s) clean";
+});
 check('shard size measured', function () {
     $m = Shard::measure(Shard::current());
     return sprintf(

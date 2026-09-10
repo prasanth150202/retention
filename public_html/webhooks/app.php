@@ -38,6 +38,14 @@ switch ($hook['topic']) {
 
         Webhook::ok('uninstall recorded');
 
+    case 'app_subscriptions/update':
+        // Shopify is the authority on subscription state; this is only how it
+        // tells us promptly. The periodic re-read in the sync job is the
+        // backstop for a webhook that never lands.
+        $tenantId = Billing::applyWebhook($hook['shop'], $hook['payload']);
+
+        Webhook::ok($tenantId === null ? 'unknown shop' : 'subscription state recorded');
+
     case 'app/scopes_update':
         // Fired when granted scopes change — usually because we added one and
         // the merchant approved it on next open. Worth recording, because

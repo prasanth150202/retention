@@ -93,6 +93,14 @@ api_version = "2025-07"
   uri = "/webhooks/app.php"
   topics = [ "app/scopes_update" ]
 
+  # Fires the moment a merchant approves, declines or lets a charge lapse,
+  # and when a payment fails. Without it the dashboard would stay locked for
+  # up to six hours after somebody pays, which is the worst possible six
+  # hours to get wrong.
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/app.php"
+  topics = [ "app_subscriptions/update" ]
+
   [[webhooks.subscriptions]]
   uri = "/webhooks/compliance.php"
   compliance_topics = [ "customers/data_request", "customers/redact", "shop/redact" ]
