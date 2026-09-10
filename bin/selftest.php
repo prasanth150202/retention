@@ -1177,6 +1177,62 @@ if ($envFile !== null) {
 // Static checks
 echo "\nStatic checks\n";
 
+check('TLS verification is never disabled', function () {
+    // This one exists because of a specific temptation. Certificate
+    // verification fails on a developer machine with no CA bundle — as it does
+    // on the Windows box this was built on — and the one-line "fix" is to turn
+    // verification off. That line then ships, and every Shopify API call,
+    // including the OAuth token exchange, will accept a forged certificate
+    // from anyone able to intercept the connection.
+    //
+    // curl and PHP's stream wrapper both verify by default, so the correct
+    // state is that none of these appear anywhere.
+    $root  = dirname(__DIR__);
+    $found = [];
+    $files = 0;
+
+    $banned = [
+        'CURLOPT_SSL_VERIFYPEER',
+        'CURLOPT_SSL_VERIFYHOST',
+        'verify_peer',
+        'verify_peer_name',
+        'allow_self_signed',
+    ];
+
+    foreach (['app', 'bin', 'public_html', 'config'] as $dir) {
+        if (!is_dir("{$root}/{$dir}")) {
+            continue;
+        }
+
+        $walk = new RecursiveIteratorIterator(new RecursiveDirectoryIterator("{$root}/{$dir}"));
+
+        foreach ($walk as $file) {
+            if ($file->getExtension() !== 'php') {
+                continue;
+            }
+            // This file lists the very strings it is looking for.
+            if (realpath($file->getPathname()) === realpath(__FILE__)) {
+                continue;
+            }
+            $files++;
+
+            $src   = (string) file_get_contents($file->getPathname());
+            $lines = explode("\n", $src);
+
+            foreach ($lines as $n => $line) {
+                foreach ($banned as $needle) {
+                    if (str_contains($line, $needle)) {
+                        $found[] = basename((string) $file->getPathname()) . ':' . ($n + 1) . " {$needle}";
+                    }
+                }
+            }
+        }
+    }
+
+    assertTrue($found === [], 'TLS verification is being configured: ' . implode(', ', $found));
+
+    return "{$files} files, verification left at the secure default";
+});
 check('no SQL binds a placeholder twice', function () {
     // PDO here runs with ATTR_EMULATE_PREPARES = false, and native prepares
     // cannot bind the same named placeholder more than once — the statement
