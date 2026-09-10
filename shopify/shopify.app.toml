@@ -16,7 +16,11 @@
 # =====================================================================
 
 name = "retention-dashboard"
-handle = "retention-dashboard"
+# The handle is GLOBALLY unique across every Shopify app and becomes the
+# App Store URL (apps.shopify.com/<handle>). "retention-dashboard" is
+# already taken by somebody else. Change this before listing if a better
+# one is wanted — after listing, the URL is public and people link to it.
+handle = "digifyce-retention-dashboard"
 
 # Filled by `shopify app config link`. Left blank so a copy of this file
 # cannot silently deploy over somebody else's app.
@@ -113,7 +117,6 @@ api_version = "2026-07"
 
 
 [build]
-include_config_on_deploy = true
 
 # MUST stay false.
 #

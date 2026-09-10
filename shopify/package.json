@@ -11,6 +11,6 @@
     "@shopify/web-pixels-extension": "^2.4.0"
   },
   "devDependencies": {
-    "@shopify/cli": "^3.87.0"
+    "@shopify/cli": "^4.8.0"
   }
 }
