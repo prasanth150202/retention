@@ -50,8 +50,8 @@ $top = $funnel === [] ? 0 : max(1, max(array_column($funnel, 'reached')));
             <?php endif; ?>
           </div>
           <div class="fbar">
-            <span style="width:<?= max(0.4, $s['reached'] / $top * 100) ?>%"></span>
-            <em style="width:<?= max(0.2, $s['strict'] / $top * 100) ?>%"></em>
+            <span style="width:<?= Fmt::barWidth($s['reached'], $top) ?>%"></span>
+            <em style="width:<?= Fmt::barWidth($s['strict'], $top) ?>%"></em>
           </div>
           <div class="n">
             <b><?= Fmt::num($s['reached']) ?></b>

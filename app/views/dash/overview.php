@@ -124,7 +124,7 @@ $tile = static function (
           <td class="n"><?= $d['missing'] ? '<span class="muted">—</span>' : Fmt::num($d['orders']) ?></td>
           <td class="n"><?= Fmt::e(Fmt::money($d['revenue_minor'], $cur)) ?></td>
           <td>
-            <div class="minibar" style="width:<?= max(0.5, $d['revenue_minor'] / $maxRev * 100) ?>%"></div>
+            <div class="minibar" style="width:<?= Fmt::barWidth($d['revenue_minor'], $maxRev) ?>%"></div>
           </td>
         </tr>
         <?php endforeach; ?>
@@ -155,7 +155,7 @@ $tile = static function (
             <td class="n"><?= Fmt::num((int) $c['visitors']) ?></td>
             <td class="n"><?= Fmt::num((int) $c['orders']) ?></td>
             <td class="n"><?= Fmt::e(Fmt::money((int) $c['revenue_minor'], $cur)) ?></td>
-            <td><div class="minibar" style="width:<?= max(0.5, (int) $c['revenue_minor'] / $maxCh * 100) ?>%"></div></td>
+            <td><div class="minibar" style="width:<?= Fmt::barWidth((int) $c['revenue_minor'], $maxCh) ?>%"></div></td>
           </tr>
           <?php endforeach; ?>
         </tbody>

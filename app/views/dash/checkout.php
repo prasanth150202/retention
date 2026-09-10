@@ -71,7 +71,7 @@ $top    = $stages === [] ? 0 : max(1, max(array_column($stages, 'entered')));
             <?php endif; ?>
           </div>
           <div class="fbar">
-            <span style="width:<?= max(0.4, $s['entered'] / $top * 100) ?>%"></span>
+            <span style="width:<?= Fmt::barWidth($s['entered'], $top) ?>%"></span>
           </div>
           <div class="n"><b><?= Fmt::num($s['entered']) ?></b></div>
         </div>

@@ -233,6 +233,12 @@ $nav  = $nav ?? 'stores';
     background: linear-gradient(90deg, var(--accent), var(--accent-lite));
     min-width: 2px;
   }
+  /* A single bar with nothing nested inside it is not the pale "reached"
+     half of a pair — it is the whole measure, so it takes the solid fill.
+     The checkout micro-funnel draws one bar per stage. */
+  .fbar span:only-child {
+    background: linear-gradient(90deg, var(--accent), var(--accent-lite));
+  }
   .fstep .n { font-size: 12px; text-align: right; color: var(--muted); }
   .fstep .n b { color: var(--ink); font-weight: 800; font-size: 14px; }
   .fdrop { font-size: 11.5px; color: var(--bad); font-weight: 600; }
@@ -284,8 +290,24 @@ $nav  = $nav ?? 'stores';
 
     /* Wide tables scroll inside their own panel. The page itself must never
        scroll sideways — a merchant swiping a report should move the report,
-       not the whole page out from under the header. */
-    .panel { overflow-x: auto; }
+       not the whole page out from under the header.
+
+       The shadows say there is more to see. Without them the retention cohort
+       table shows "within 30 days" and nothing else on a phone, and a merchant
+       reasonably concludes the 60, 90 and 180 day columns do not exist.
+       Background-attachment does the work: the two `local` panels scroll with
+       the content and cover the `scroll` shadows once an edge is reached, so a
+       shadow appears only while there is something in that direction. No
+       JavaScript, and nothing shown on a table that fits. */
+    .panel {
+      overflow-x: auto;
+      background:
+        linear-gradient(to right, var(--panel) 40%, rgba(255, 253, 248, 0)) left center / 44px 100% no-repeat local,
+        linear-gradient(to left,  var(--panel) 40%, rgba(255, 253, 248, 0)) right center / 44px 100% no-repeat local,
+        radial-gradient(farthest-side at 0 50%,   rgba(31, 29, 26, .13), rgba(31, 29, 26, 0)) left center / 16px 100% no-repeat scroll,
+        radial-gradient(farthest-side at 100% 50%, rgba(31, 29, 26, .13), rgba(31, 29, 26, 0)) right center / 16px 100% no-repeat scroll,
+        var(--panel);
+    }
     .note, .empty { overflow-x: visible; }
   }
 </style>

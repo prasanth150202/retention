@@ -79,6 +79,23 @@ final class Fmt
         return $symbol . number_format($major, 0);
     }
 
+    /**
+     * Width of a bar, as a percentage.
+     *
+     * A floor keeps a small-but-real value visible instead of collapsing it to
+     * an invisible hairline. Zero gets no floor and no bar: a stage nobody
+     * reached must look like a stage nobody reached, not like a trace of
+     * activity. Same rule as rendering null as a dash rather than 0%.
+     */
+    public static function barWidth(int|float|null $value, int|float|null $max, float $floor = 0.5): float
+    {
+        if ($value === null || $max === null || $value <= 0 || $max <= 0) {
+            return 0.0;
+        }
+
+        return max($floor, $value / $max * 100);
+    }
+
     public static function num(?int $n): string
     {
         return $n === null ? self::NONE : number_format($n);

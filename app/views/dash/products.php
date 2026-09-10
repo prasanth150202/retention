@@ -44,7 +44,7 @@ $table = static function (array $rows, string $cur): void {
           </td>
           <td class="n">
             <?= Fmt::num((int) $p['views']) ?>
-            <div class="minibar" style="width:<?= max(4, (int) $p['views'] / $maxViews * 100) ?>%;margin-left:auto"></div>
+            <div class="minibar" style="width:<?= Fmt::barWidth((int) $p['views'], $maxViews, 4) ?>%;margin-left:auto"></div>
           </td>
           <td class="n"><?= Fmt::num((int) $p['atc']) ?></td>
           <td class="n"><?= Fmt::pct($p['view_to_atc']) ?></td>

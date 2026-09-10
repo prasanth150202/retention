@@ -54,7 +54,7 @@ $page = 'geography';
             <td class="n"><?= Fmt::num((int) $d['orders']) ?></td>
             <td class="n"><?= Fmt::pct($d['conversion'], 2) ?></td>
             <td class="n"><?= Fmt::e(Fmt::money((int) $d['revenue_minor'], $cur)) ?></td>
-            <td><div class="minibar" style="width:<?= max(0.5, (int) $d['visitors'] / $maxD * 100) ?>%"></div></td>
+            <td><div class="minibar" style="width:<?= Fmt::barWidth((int) $d['visitors'], $maxD) ?>%"></div></td>
           </tr>
           <?php endforeach; ?>
         </tbody>
@@ -69,7 +69,13 @@ $page = 'geography';
   <?php if ($geography !== []): ?>
     <h2>Where visitors are</h2>
     <div class="panel" style="padding:14px 16px">
-      <?php $maxG = max(1, max(array_column($geography, 'visitors'))); ?>
+      <?php
+      // The bar sits beside Revenue and the table is ordered by Revenue, so
+      // it has to encode Revenue. Sizing it by visitors made the bars look
+      // shuffled: a city with more visitors but less revenue drew a longer
+      // bar below one with a shorter bar.
+      $maxG = max(1, max(array_column($geography, 'revenue_minor')));
+      ?>
       <table class="data">
         <thead>
           <tr>
@@ -89,7 +95,7 @@ $page = 'geography';
             <td class="n"><?= Fmt::num((int) $g['orders']) ?></td>
             <td class="n"><?= Fmt::pct($g['conversion'], 2) ?></td>
             <td class="n"><?= Fmt::e(Fmt::money((int) $g['revenue_minor'], $cur)) ?></td>
-            <td><div class="minibar" style="width:<?= max(0.5, (int) $g['visitors'] / $maxG * 100) ?>%"></div></td>
+            <td><div class="minibar" style="width:<?= Fmt::barWidth((int) $g['revenue_minor'], $maxG) ?>%"></div></td>
           </tr>
           <?php endforeach; ?>
         </tbody>
