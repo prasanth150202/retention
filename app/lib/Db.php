@@ -137,10 +137,23 @@ final class Db
         // this application can have, because every figure downstream is then
         // confidently incorrect.
         //
+        // NO_ZERO_DATE and NO_ZERO_IN_DATE are listed explicitly. STRICT on its
+        // own rejects an impossible date such as 2026-02-30, but still accepts
+        // a literal 0000-00-00 — which then reads as a real timestamp
+        // everywhere downstream and sorts before every genuine row.
+        //
+        // ONLY_FULL_GROUP_BY is deliberately absent. The campaign and product
+        // reports select a dimension's name alongside an aggregate grouped by
+        // that dimension's id: functionally dependent, but not in a form MySQL
+        // can prove. Assigning the whole mode rather than appending to whatever
+        // the host set is what makes that a stated decision rather than a
+        // silent dependency on the server happening to leave it off.
+        //
         // Set per connection rather than relied upon from the server config,
         // so it holds on any host regardless of how that host is tuned.
         $pdo->exec(
-            "SET SESSION sql_mode = 'STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION',"
+            "SET SESSION sql_mode = 'STRICT_TRANS_TABLES,NO_ZERO_DATE,NO_ZERO_IN_DATE,"
+            . "ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION',"
             . " time_zone = '+00:00'"
         );
 

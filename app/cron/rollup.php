@@ -15,7 +15,14 @@
  *
  * Usage:
  *   php app/cron/rollup.php [--env=.env.production] [--tenant=1]
- *                           [--days=10] [--date=2026-09-01] [--verbose]
+ *                           [--days=10] [--date=2026-09-01]
+ *                           [--from=2026-01-01] [--verbose]
+ *
+ * --from recomputes every day from that date to today, including days
+ * already closed. Needed whenever a rollup's DEFINITION changes: closed
+ * days are never revisited on their own, so without it the dashboard
+ * silently mixes two definitions of the same column either side of the
+ * day the change shipped.
  */
 
 declare(strict_types=1);
@@ -28,10 +35,16 @@ if (PHP_SAPI !== 'cli') {
 $root = dirname(__DIR__, 2);
 require_once $root . '/app/lib/bootstrap.php';
 
-$opts    = getopt('', ['env::', 'tenant::', 'days::', 'date::', 'verbose']);
+$opts    = getopt('', ['env::', 'tenant::', 'days::', 'date::', 'from::', 'verbose']);
 $verbose = array_key_exists('verbose', $opts);
 $onlyOne = isset($opts['tenant']) ? (int) $opts['tenant'] : null;
 $onlyDay = $opts['date'] ?? null;
+$from    = $opts['from'] ?? null;
+
+if ($from !== null && !preg_match('/^\d{4}-\d{2}-\d{2}$/', (string) $from)) {
+    fwrite(STDERR, "--from needs a date like 2026-01-01\n");
+    exit(1);
+}
 
 // A first run on a store with history has a lot of days to get through. The
 // cap keeps any single run inside a shared-host time limit; the next run
@@ -66,9 +79,16 @@ try {
         try {
             Channel::flush($tid);
 
-            $days = $onlyDay !== null
-                ? [(string) $onlyDay]
-                : Rollup::pendingDays($tid, $maxDays);
+            if ($onlyDay !== null) {
+                $days = [(string) $onlyDay];
+            } elseif ($from !== null) {
+                // Every day from here to today, closed ones included. This is
+                // the only path that revisits a settled day, which is why it
+                // is explicit rather than automatic.
+                $days = Rollup::daysFrom($tid, (string) $from);
+            } else {
+                $days = Rollup::pendingDays($tid, $maxDays);
+            }
 
             if ($days !== []) {
                 $log("--- {$t['display_name']}: " . count($days) . ' day(s) — '

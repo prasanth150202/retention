@@ -194,6 +194,7 @@ function syncOrders(ShopifyApi $api, int $tenantId, callable $log): int
     $count   = 0;
     $newest  = $watermark;
     $pages   = 0;
+    $skipped = [];
 
     do {
         $data = $api->query($query, ['cursor' => $cursor, 'q' => $filter !== '' ? $filter : null]);
@@ -206,8 +207,29 @@ function syncOrders(ShopifyApi $api, int $tenantId, callable $log): int
                 continue;
             }
 
-            upsertOrder($tenantId, $node);
-            $count++;
+            // One unstorable order must not stop the store's entire sync.
+            //
+            // upsertOrder() throws on anything the database refuses, and this
+            // loop sits ABOVE saveCursor(). Letting the exception through
+            // unwinds past it, so the cursor never advances, the next run
+            // refetches the same page, hits the same order and fails the same
+            // way — that store's orders stop syncing permanently, and the
+            // symptom is silence rather than an error.
+            //
+            // Skipping is the lesser loss: one order missing from the reports
+            // and named in job_runs, against every later order missing and
+            // nothing to look at.
+            try {
+                upsertOrder($tenantId, $node);
+                $count++;
+            } catch (Throwable $e) {
+                $skipped[] = sprintf(
+                    'order %s: %s',
+                    ShopifyApi::gidToId($node['id'] ?? null) ?? '?',
+                    substr($e->getMessage(), 0, 200)
+                );
+                $log('    SKIPPED ' . end($skipped));
+            }
 
             $updated = $node['updatedAt'] ?? null;
             if ($updated !== null) {
@@ -232,12 +254,15 @@ function syncOrders(ShopifyApi $api, int $tenantId, callable $log): int
         // store with years of history; the next run picks up the cursor.
         if ($pages >= 40) {
             $log('    stopping at 40 pages; the next run resumes from the cursor');
+            reportSkippedOrders($tenantId, $skipped);
             return $count;
         }
     } while ($hasNext);
 
     saveCursor($tenantId, 'orders', $newest, null);
     markSynced($tenantId, 'orders');
+
+    reportSkippedOrders($tenantId, $skipped);
 
     return $count;
 }
@@ -313,10 +338,10 @@ function upsertOrder(int $tenantId, array $o): void
         ShopifyApi::minor($o['totalDiscountsSet']['shopMoney']['amount'] ?? null),
         ShopifyApi::minor($o['totalRefundedSet']['shopMoney']['amount'] ?? null) ?? 0,
         isset($o['discountCodes']) && is_array($o['discountCodes'])
-            ? substr(implode(',', $o['discountCodes']), 0, 255) : null,
-        substr((string) ($o['landingPageUrl'] ?? ''), 0, 512) ?: null,
-        substr((string) ($o['referrerUrl'] ?? ''), 0, 512) ?: null,
-        substr((string) ($o['sourceName'] ?? ''), 0, 64) ?: null,
+            ? Text::fitOrNull(implode(',', $o['discountCodes']), 255) : null,
+        Text::fitOrNull($o['landingPageUrl'] ?? null, 512),
+        Text::fitOrNull($o['referrerUrl'] ?? null, 512),
+        Text::fitOrNull($o['sourceName'] ?? null, 64),
         !empty($journey['ready']) ? 1 : 0,
         isset($journey['daysToConversion']) ? (int) $journey['daysToConversion'] : null,
         isset($journey['momentsCount']) ? (int) $journey['momentsCount'] : null,
@@ -361,8 +386,8 @@ function upsertLineItems(int $tenantId, int $orderId, array $edges): void
             $lineId,
             ShopifyApi::gidToId($n['product']['id'] ?? null),
             ShopifyApi::gidToId($n['variant']['id'] ?? null),
-            substr((string) ($n['title'] ?? ''), 0, 255) ?: null,
-            substr((string) ($n['sku'] ?? ''), 0, 96) ?: null,
+            Text::fitOrNull($n['title'] ?? null, 255),
+            Text::fitOrNull($n['sku'] ?? null, 96),
             (int) ($n['quantity'] ?? 1),
             ShopifyApi::minor($n['originalUnitPriceSet']['shopMoney']['amount'] ?? null),
             ShopifyApi::minor($n['totalDiscountSet']['shopMoney']['amount'] ?? null) ?? 0,
@@ -509,13 +534,41 @@ function markSynced(int $tenantId, string $resource): void
     )->execute([$tenantId]);
 }
 
+/**
+ * Record orders this run could not store.
+ *
+ * They are skipped rather than allowed to stall the cursor, so this is the
+ * only trace they leave. health_check reads job_runs, which is what turns a
+ * skipped order into something somebody notices.
+ *
+ * @param array<int,string> $skipped
+ */
+function reportSkippedOrders(int $tenantId, array $skipped): void
+{
+    if ($skipped === []) {
+        return;
+    }
+
+    Db::core()->prepare(
+        "INSERT INTO job_runs (job_name, tenant_id, started_at, finished_at, status, message)
+         VALUES ('sync', ?, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'failed', ?)"
+    )->execute([
+        $tenantId,
+        Text::fit(
+            count($skipped) . ' order(s) could not be stored and were skipped: '
+            . implode(' | ', array_slice($skipped, 0, 5)),
+            2000
+        ),
+    ]);
+}
+
 function noteFailure(int $tenantId, string $resource, string $message): void
 {
     Db::core()->prepare(
         'INSERT INTO sync_cursors (tenant_id, resource, last_run_at, last_error)
          VALUES (?,?,UTC_TIMESTAMP(),?)
          ON DUPLICATE KEY UPDATE last_run_at = UTC_TIMESTAMP(), last_error = VALUES(last_error)'
-    )->execute([$tenantId, $resource, substr($message, 0, 2000)]);
+    )->execute([$tenantId, $resource, Text::fit($message, 2000)]);
 }
 
 function isoToSql(?string $iso): ?string

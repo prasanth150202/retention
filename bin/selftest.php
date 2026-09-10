@@ -80,6 +80,18 @@ check('shard pattern has {year}', function () {
     assertTrue(str_contains(Config::require('db.shard'), '{year}'), 'DB_SHARD lacks {year}');
     return Config::require('db.shard');
 });
+check('mbstring is available', function () {
+    // Text::fit() and Fmt::clip() are the only mb_* callers in the tree, and
+    // everything written to a VARCHAR now goes through Text::fit(). Without
+    // the extension those are undefined functions, so the products, campaigns
+    // and geography tabs fatal and the importer stops storing anything.
+    // Shared hosting normally has it; "normally" is not a guarantee, and a
+    // fatal on the products tab is a poor way to find out.
+    assertTrue(Text::mbstringAvailable(), 'ext-mbstring is not loaded');
+    assertTrue(mb_internal_encoding() !== false, 'mbstring is loaded but not usable');
+
+    return 'ext-mbstring present';
+});
 check('missing key throws', fn() => assertThrows(
     fn() => Config::require('db.definitely_not_here'),
     'Config::require returned a value for a missing key'
@@ -1174,6 +1186,366 @@ if ($envFile !== null) {
 }
 
 // -----------------------------------------------------------------
+// Deletion
+//
+// Purge is what answers shop/redact and what the retention cron runs.
+// "We deleted your data" is a claim that has to be true. Local runs
+// only: it plants two stores and removes them.
+echo "\nDeletion\n";
+
+if ($envFile !== null) {
+    skip('deleting a store leaves nothing behind', 'plants two stores; local runs only');
+    skip('deleting one store spares the next', 'local runs only');
+} else {
+    $pgPdo   = Db::core();
+    $pgShops = ['selftest-purge-a.myshopify.com', 'selftest-purge-b.myshopify.com'];
+
+    // Which tables actually carry per-store data? Ask the SCHEMA, not Purge's
+    // own list — otherwise this only proves Purge does what it says it does,
+    // and a table it forgot is exactly the failure that matters.
+    $pgScoped = $pgPdo->query(
+        "SELECT TABLE_NAME FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE() AND COLUMN_NAME = 'tenant_id'
+            AND TABLE_NAME <> 'tenants'
+          ORDER BY TABLE_NAME"
+    )->fetchAll(PDO::FETCH_COLUMN);
+
+    /** @return array<string,int> tables with rows for this store */
+    $pgRows = static function (int $tid) use ($pgPdo, $pgScoped): array {
+        $out = [];
+        foreach ($pgScoped as $table) {
+            $q = $pgPdo->prepare("SELECT COUNT(*) FROM `{$table}` WHERE tenant_id = ?");
+            $q->execute([$tid]);
+            if (($n = (int) $q->fetchColumn()) > 0) {
+                $out[$table] = $n;
+            }
+        }
+
+        return $out;
+    };
+
+    $pgTz  = new DateTimeZone('Asia/Kolkata');
+    $pgUtc = new DateTimeZone('UTC');
+    $pgDay = (new DateTimeImmutable('now', $pgTz))->modify('-10 days')->format('Y-m-d');
+    $pgAt  = static fn(string $x): string =>
+        (new DateTimeImmutable($x, $pgTz))->setTimezone($pgUtc)->format('Y-m-d H:i:s');
+
+    $pgShard = Shard::connectionForDate($pgDay);
+    $pgUid   = 700000;
+
+    $pgFill = static function (string $shop) use ($pgPdo, $pgShard, &$pgUid, $pgAt, $pgDay): int {
+        $pgPdo->prepare('DELETE FROM tenants WHERE shop_domain = ?')->execute([$shop]);
+
+        $t = Tenant::upsert($shop, [
+            'access_token'             => 'selftest',
+            'refresh_token'            => 'selftest',
+            'expires_in'               => 3600,
+            'refresh_token_expires_in' => 7776000,
+        ], 'read_orders');
+        $pgPdo->prepare('UPDATE tenants SET iana_timezone = ? WHERE tenant_id = ?')
+            ->execute(['Asia/Kolkata', $t]);
+        Tenant::forgetCache();
+
+        $cam = Dim::campaign($t, 'https://s.test/?utm_source=instagram&utm_medium=social&utm_campaign=x');
+        $pth = Dim::path($t, 'https://s.test/products/thing');
+        $ref = Dim::referrer($t, 'https://l.instagram.com/');
+        $geo = Dim::geo(['country' => 'IN', 'city' => 'Mumbai']);
+        $ua  = Dim::userAgent($t, 'Mozilla/5.0 (iPhone) Mobile Safari/604.1');
+        $trm = Dim::searchTerm($t, 'kurta');
+        $clk = Dim::clickTarget($t, 'Buy now', '.btn', 'https://s.test/cart');
+        $vis = Dim::visitor($t, "purge-{$t}");
+
+        foreach ([
+            [EventType::PAGE_VIEWED, '10:00:00'],
+            [EventType::PRODUCT_VIEWED, '10:05:00'],
+            [EventType::PRODUCT_ADDED_TO_CART, '10:10:00'],
+            [EventType::CHECKOUT_STARTED, '10:15:00'],
+            [EventType::CHECKOUT_COMPLETED, '10:25:00'],
+        ] as [$type, $time]) {
+            $pgShard->prepare(
+                'INSERT INTO events (tenant_id, event_uid, occurred_at, received_at, event_type,
+                                     source, visitor_key, path_id, referrer_id, campaign_id,
+                                     product_id, geo_id, ua_id, search_term_id, click_target_id)
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)'
+            )->execute([$t, $pgUid++, $pgAt("{$pgDay} {$time}"), $pgAt("{$pgDay} {$time}"), $type,
+                EventType::SOURCE_PIXEL, $vis, $pth, $ref, $cam, 4242, $geo, $ua, $trm, $clk]);
+        }
+
+        $pgPdo->prepare('INSERT INTO products (tenant_id, product_id, title, handle, synced_at)
+                         VALUES (?,?,?,?,UTC_TIMESTAMP())')->execute([$t, 4242, 'Thing', 'thing']);
+        $pgPdo->prepare('INSERT INTO product_variants (tenant_id, variant_id, product_id, title, synced_at)
+                         VALUES (?,?,?,?,UTC_TIMESTAMP())')->execute([$t, 9001, 4242, 'Default']);
+        $pgPdo->prepare('INSERT INTO customers (tenant_id, shopify_customer_id, synced_at)
+                         VALUES (?,?,UTC_TIMESTAMP())')->execute([$t, 7001]);
+        $pgPdo->prepare(
+            "INSERT INTO orders (tenant_id, order_id, shopify_customer_id, phone_hash, visitor_key,
+                                 created_at, currency, total_minor, synced_at)
+             VALUES (?,?,?,?,?,?, 'INR', 150000, UTC_TIMESTAMP())"
+        )->execute([$t, 6001, 7001, Hash::pii($t, (string) Hash::normalisePhone('9876500001')),
+            $vis, $pgAt("{$pgDay} 10:25:00")]);
+        $pgPdo->prepare('INSERT INTO order_line_items (tenant_id, order_id, line_id, product_id,
+                                                       quantity, price_minor, discount_minor)
+                         VALUES (?,?,1,?,1,150000,0)')->execute([$t, 6001, 4242]);
+        $pgPdo->prepare('INSERT INTO abandoned_checkouts (tenant_id, checkout_id, visitor_key,
+                                                          created_at, total_minor, synced_at)
+                         VALUES (?,?,?,?,90000,UTC_TIMESTAMP())')
+            ->execute([$t, 8001, $vis, $pgAt("{$pgDay} 11:00:00")]);
+        $pgPdo->prepare('INSERT INTO abandoned_checkout_items (tenant_id, checkout_id, line_no,
+                                                               product_id, quantity, price_minor)
+                         VALUES (?,?,1,?,1,90000)')->execute([$t, 8001, 4242]);
+
+        foreach (Identity::unresolved($t, 50) as $o) { Identity::resolveOrder($t, $o); }
+        foreach (Identity::pendingResequence($t, 50) as $p) { Identity::resequence($t, $p); }
+        Identity::linkVisitors($t, 50);
+        Attribution::resolveBatch($t, Attribution::pending($t, 50));
+        Attribution::backfillChannels($t);
+        Rollup::day($t, $pgDay);
+        Rollup::cohorts($t);
+
+        $dir = Config::get('paths.spool') . '/' . $t;
+        @mkdir($dir, 0700, true);
+        @file_put_contents($dir . '/' . gmdate('YmdH') . '.ndjson', "{\"n\":\"page_viewed\"}\n");
+
+        return $t;
+    };
+
+    $pgA = $pgFill($pgShops[0]);
+    $pgB = $pgFill($pgShops[1]);
+
+    $pgBeforeA = $pgRows($pgA);
+    $pgBeforeB = $pgRows($pgB);
+
+    // shop/redact takes everything, rollups included.
+    $pgResult = Purge::store($pgA, true);
+
+    check('deleting a store leaves nothing behind', function () use (
+        $pgRows, $pgA, $pgBeforeA, $pgResult, $pgShard
+    ) {
+        assertTrue(count($pgBeforeA) >= 18, 'the fixture only filled ' . count($pgBeforeA) . ' tables');
+        assertTrue($pgResult['shards_failed'] === [], 'a shard failed: ' . implode(',', $pgResult['shards_failed']));
+
+        $left = $pgRows($pgA);
+        assertTrue($left === [], 'rows survived in ' . json_encode($left));
+
+        $events = (int) $pgShard->query("SELECT COUNT(*) FROM events WHERE tenant_id = {$pgA}")->fetchColumn();
+        assertTrue($events === 0, "{$events} event(s) survived");
+
+        $spool = glob(Config::get('paths.spool') . '/' . $pgA . '/*.ndjson') ?: [];
+        assertTrue($spool === [], count($spool) . ' spool file(s) survived');
+
+        return count($pgBeforeA) . ' tables emptied, events and spool gone';
+    });
+
+    check('deleting one store spares the next', function () use (
+        $pgRows, $pgB, $pgBeforeB, $pgShard
+    ) {
+        // The failure this exists for: a DELETE that forgot its WHERE, or a
+        // shared dimension row removed because two stores happened to intern
+        // the same value.
+        $after = $pgRows($pgB);
+        assertTrue(
+            $after == $pgBeforeB,
+            'the other store changed: ' . json_encode(array_diff_assoc($pgBeforeB, $after))
+        );
+
+        $events = (int) $pgShard->query("SELECT COUNT(*) FROM events WHERE tenant_id = {$pgB}")->fetchColumn();
+        assertTrue($events === 5, "the other store has {$events} event(s), expected 5");
+
+        return array_sum($pgBeforeB) . ' rows and 5 events untouched';
+    });
+
+    // Tidy the survivor.
+    Purge::store($pgB, true);
+    foreach ([$pgA, $pgB] as $t) {
+        $dir = Config::get('paths.spool') . '/' . $t;
+        foreach (glob($dir . '/*') ?: [] as $x) { @unlink($x); }
+        @rmdir($dir);
+    }
+    $pgPdo->prepare('DELETE FROM tenants WHERE shop_domain IN (?, ?)')->execute($pgShops);
+}
+
+// -----------------------------------------------------------------
+// The importer
+//
+// A spool file through mapEvent() into the shard. No HTTP — the endpoint
+// is a separate concern — but this is the path every event takes, and it
+// is the one that failed silently: a constant declared among the helper
+// functions at the bottom of import.php did not exist while the main loop
+// ran, so every event became "malformed" and the shard stayed empty with
+// nothing reported as an error.
+echo "\nThe importer\n";
+
+if ($envFile !== null) {
+    skip('a spool file becomes events', 'writes a spool file; local runs only');
+    skip('a replayed file adds nothing', 'local runs only');
+    skip('hostile values are bounded, not rejected', 'local runs only');
+} else {
+    $imShop = 'selftest-import.myshopify.com';
+    $imPdo  = Db::core();
+    $imPdo->prepare('DELETE FROM tenants WHERE shop_domain = ?')->execute([$imShop]);
+
+    $imT = Tenant::upsert($imShop, [
+        'access_token'             => 'selftest',
+        'refresh_token'            => 'selftest',
+        'expires_in'               => 3600,
+        'refresh_token_expires_in' => 7776000,
+    ], 'read_orders');
+    Tenant::forgetCache();
+
+    $imShard = Shard::connectionForDate(gmdate('Y-m-d'));
+    $imShard->prepare('DELETE FROM events WHERE tenant_id = ?')->execute([$imT]);
+
+    $imDir = Config::get('paths.spool') . '/' . $imT;
+    @mkdir($imDir, 0700, true);
+    foreach (glob($imDir . '/*.ndjson') ?: [] as $x) { @unlink($x); }
+
+    // The importer skips the CURRENT hour's file, because the ingest endpoint
+    // is still appending to it. Writing an earlier hour is what the passage of
+    // an hour does, without waiting for one.
+    $imFile = $imDir . '/' . gmdate('YmdH', time() - 7200) . '.ndjson';
+    $imNow  = (int) round(microtime(true) * 1000);
+
+    // Field names come from the web pixel: `n` for the name, `s` for source,
+    // `ts` in milliseconds. See shopify/extensions/retention-pixel/src/index.js.
+    $imEvents = [
+        ['n' => 'page_viewed', 's' => 1, 'id' => 'st-1', 'ts' => $imNow, 'cid' => 'st-visitor',
+         'u' => 'https://s.test/?utm_source=instagram&utm_medium=social&utm_campaign=selftest'],
+        ['n' => 'product_viewed', 's' => 1, 'id' => 'st-2', 'ts' => $imNow, 'cid' => 'st-visitor',
+         'u' => 'https://s.test/products/x', 'p' => 12345, 'v' => 67890],
+        ['n' => 'product_added_to_cart', 's' => 1, 'id' => 'st-3', 'ts' => $imNow, 'cid' => 'st-visitor',
+         'u' => 'https://s.test/products/x', 'p' => 12345, 'q' => 2],
+        ['n' => 'checkout_completed', 's' => 1, 'id' => 'st-4', 'ts' => $imNow, 'cid' => 'st-visitor',
+         'u' => 'https://s.test/checkout', 'o' => 555001, 'a' => 249900, 'c' => 'INR'],
+        // Deliberately hostile: a negative product id, a quantity and an amount
+        // far past their columns, and a name with a multibyte character right
+        // where a byte-based cut would split it.
+        ['n' => 'product_added_to_cart', 's' => 1, 'id' => 'st-5', 'ts' => $imNow, 'cid' => 'st-visitor',
+         'u' => 'https://s.test/products/y?utm_campaign=' . str_repeat('श', 120),
+         'p' => -7, 'q' => 999999, 'a' => '99999999999999'],
+    ];
+
+    $imLines = '';
+    foreach ($imEvents as $e) {
+        $imLines .= json_encode($e, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n";
+    }
+    file_put_contents($imFile, $imLines);
+
+    $imRun = static function () use ($imT): void {
+        $root = dirname(__DIR__);
+        @shell_exec('"' . PHP_BINARY . '" ' . escapeshellarg($root . '/app/cron/import.php') . ' 2>&1');
+    };
+    $imRun();
+
+    check('a spool file becomes events', function () use ($imShard, $imT, $imPdo) {
+        $stmt = $imShard->prepare(
+            'SELECT event_type, visitor_key, campaign_id, product_id, qty, amount_minor, order_ref
+               FROM events WHERE tenant_id = ? ORDER BY event_uid'
+        );
+        $stmt->execute([$imT]);
+        $rows = $stmt->fetchAll();
+
+        assertTrue(count($rows) === 5, count($rows) . ' event(s) landed, expected 5');
+
+        $byType = [];
+        foreach ($rows as $r) { $byType[(int) $r['event_type']][] = $r; }
+
+        assertTrue(isset($byType[EventType::PAGE_VIEWED]), 'the page view is missing');
+        assertTrue(
+            (int) $byType[EventType::PRODUCT_VIEWED][0]['product_id'] === 12345,
+            'product id did not survive'
+        );
+        assertTrue(
+            (int) $byType[EventType::CHECKOUT_COMPLETED][0]['order_ref'] === 555001,
+            'the order id did not survive'
+        );
+        assertTrue(
+            (int) $byType[EventType::CHECKOUT_COMPLETED][0]['amount_minor'] === 249900,
+            'the amount did not survive'
+        );
+
+        // The UTM tuple must be interned, not dropped.
+        $campaign = (int) $byType[EventType::PAGE_VIEWED][0]['campaign_id'];
+        assertTrue($campaign > 0, 'the campaign was not interned');
+
+        $c = $imPdo->prepare('SELECT utm_source FROM dim_campaign WHERE tenant_id = ? AND campaign_id = ?');
+        $c->execute([$imT, $campaign]);
+        assertTrue($c->fetchColumn() === 'instagram', 'utm_source did not survive');
+
+        $visitors = array_unique(array_column($rows, 'visitor_key'));
+        assertTrue(count($visitors) === 1, 'one browser became ' . count($visitors) . ' visitors');
+
+        return '5 events, fields and campaign intact';
+    });
+
+    check('hostile values are bounded, not rejected', function () use ($imShard, $imT, $imPdo) {
+        // These arrive from a browser, so they cannot be trusted to be in
+        // range. The events insert uses INSERT IGNORE for deduplication, and
+        // IGNORE also downgrades an out-of-range value to a silent clamp —
+        // strict mode does not apply to it. So the bounds have to hold before
+        // the value is handed over, and a bad one must not lose the event.
+        $stmt = $imShard->prepare(
+            "SELECT product_id, qty, amount_minor, campaign_id FROM events
+              WHERE tenant_id = ? AND event_type = ? ORDER BY event_uid"
+        );
+        $stmt->execute([$imT, EventType::PRODUCT_ADDED_TO_CART]);
+        $rows = $stmt->fetchAll();
+
+        assertTrue(count($rows) === 2, 'the hostile add-to-cart was dropped');
+
+        $bad = null;
+        foreach ($rows as $r) {
+            if ((int) $r['qty'] !== 2) { $bad = $r; }
+        }
+        assertTrue($bad !== null, 'the hostile row is missing');
+
+        // Negative becomes null rather than wrapping to a huge unsigned value.
+        assertTrue($bad['product_id'] === null, 'a negative product id was stored as ' . var_export($bad['product_id'], true));
+        assertTrue((int) $bad['qty'] === 65535, 'quantity was not clamped: ' . $bad['qty']);
+        assertTrue((int) $bad['amount_minor'] === 4294967295, 'amount was not clamped: ' . $bad['amount_minor']);
+
+        // A multibyte campaign name cut at a byte boundary would be invalid
+        // UTF-8, which strict mode rejects — losing the whole event.
+        $c = $imPdo->prepare('SELECT utm_campaign FROM dim_campaign WHERE tenant_id = ? AND campaign_id = ?');
+        $c->execute([$imT, (int) $bad['campaign_id']]);
+        $name = (string) $c->fetchColumn();
+
+        assertTrue($name !== '', 'the multibyte campaign was not stored');
+        assertTrue(mb_check_encoding($name, 'UTF-8'), 'the stored campaign name is not valid UTF-8');
+
+        return 'clamped and stored, event kept';
+    });
+
+    check('a replayed file adds nothing', function () use ($imShard, $imT, $imDir, $imFile, $imRun) {
+        // The same beacon can arrive twice. uq_event is what stops that
+        // becoming a second row — and a duplicated purchase event would
+        // overstate revenue.
+        $before = (int) $imShard->query("SELECT COUNT(*) FROM events WHERE tenant_id = {$imT}")->fetchColumn();
+
+        $again = $imDir . '/' . gmdate('YmdH', time() - 10800) . '.ndjson';
+        @copy($imFile, $again);
+        if (!is_file($again)) {
+            // The first run moves the file once processed; rebuild from the
+            // processed copy if that is where it went.
+            $processed = Config::get('paths.processed') . '/' . $imT;
+            foreach (glob($processed . '/*.ndjson') ?: [] as $p) { @copy($p, $again); break; }
+        }
+        $imRun();
+
+        $after = (int) $imShard->query("SELECT COUNT(*) FROM events WHERE tenant_id = {$imT}")->fetchColumn();
+        assertTrue($after === $before, "replay changed the count from {$before} to {$after}");
+
+        return "{$after} rows before and after";
+    });
+
+    $imShard->prepare('DELETE FROM events WHERE tenant_id = ?')->execute([$imT]);
+    foreach (glob($imDir . '/*') ?: [] as $x) { @unlink($x); }
+    @rmdir($imDir);
+    foreach (glob(Config::get('paths.processed') . '/' . $imT . '/*') ?: [] as $x) { @unlink($x); }
+    @rmdir(Config::get('paths.processed') . '/' . $imT);
+    $imPdo->prepare('DELETE FROM tenants WHERE shop_domain = ?')->execute([$imShop]);
+}
+
+// -----------------------------------------------------------------
 echo "\nIngest write-key map\n";
 
 check('a new store is in the map immediately', function () {
@@ -1386,6 +1758,9 @@ if ($envFile !== null) {
         'recomputing a day changes nothing',
         'days close after the reclose window',
         'new and returning customers partition',
+        'a buyer we cannot classify is not called returning',
+        'resequencing leaves no stale numbers',
+        'range figures count people, not buyer-days',
         'every dashboard tab renders',
         'a brand new store is told which it is',
     ] as $label) {
@@ -1781,6 +2156,215 @@ if ($envFile !== null) {
             assertTrue((int) $k['repeat_customers'] === 0, 'returning: ' . $k['repeat_customers']);
 
             return '3 orders, 2 buyers, 2 new + 0 returning';
+        } finally {
+            $ruPdo->prepare('DELETE FROM tenants WHERE shop_domain = ?')->execute([$shop]);
+        }
+    });
+
+    check('a buyer we cannot classify is not called returning', function () use ($ruPdo) {
+        // The partition is derived, so it depends on every buyer having a
+        // sequence — and some never do. Identity assigns person_id and numbers
+        // the orders in two separate passes, and a store with
+        // refunded_counts_as_order = 0 leaves refunded orders unnumbered for
+        // good.
+        //
+        // Deriving from every purchaser swept those into "returning", which
+        // reported a store whose only customer was a first-time buyer as 100%
+        // repeat. Better to admit we cannot classify them: an undercount is
+        // visible, a confident wrong answer is not.
+        $shop = 'selftest-unsequenced.myshopify.com';
+        $ruPdo->prepare('DELETE FROM tenants WHERE shop_domain = ?')->execute([$shop]);
+
+        $t = Tenant::upsert($shop, [
+            'access_token'             => 'selftest',
+            'refresh_token'            => 'selftest',
+            'expires_in'               => 3600,
+            'refresh_token_expires_in' => 7776000,
+        ], 'read_orders');
+        $ruPdo->prepare(
+            'UPDATE tenants SET iana_timezone = ?, refunded_counts_as_order = 0 WHERE tenant_id = ?'
+        )->execute(['Asia/Kolkata', $t]);
+        Tenant::forgetCache();
+
+        $tz  = new DateTimeZone('Asia/Kolkata');
+        $utc = new DateTimeZone('UTC');
+        $day = (new DateTimeImmutable('now', $tz))->modify('-10 days')->format('Y-m-d');
+
+        try {
+            // One shopper, one order, refunded. Their first ever purchase.
+            $ruPdo->prepare(
+                "INSERT INTO orders (tenant_id, order_id, phone_hash, created_at,
+                                     financial_status, currency, total_minor, synced_at)
+                 VALUES (?, ?, ?, ?, 'refunded', 'INR', 100000, UTC_TIMESTAMP())"
+            )->execute([
+                $t, 910001,
+                Hash::pii($t, (string) Hash::normalisePhone('9876511111')),
+                (new DateTimeImmutable("{$day} 10:00:00", $tz))->setTimezone($utc)->format('Y-m-d H:i:s'),
+            ]);
+
+            foreach (Identity::unresolved($t, 50) as $o) { Identity::resolveOrder($t, $o); }
+            foreach (Identity::pendingResequence($t, 50) as $p) { Identity::resequence($t, $p); }
+            Rollup::day($t, $day);
+
+            $stmt = $ruPdo->prepare(
+                'SELECT order_sequence FROM orders WHERE tenant_id = ? AND order_id = ?'
+            );
+            $stmt->execute([$t, 910001]);
+            assertTrue(
+                $stmt->fetchColumn() === null,
+                'the fixture no longer produces an unsequenced order'
+            );
+
+            $stmt = $ruPdo->prepare(
+                'SELECT purchasers, new_customers, repeat_customers
+                   FROM rollup_daily_kpi WHERE tenant_id = ? AND stat_date = ?'
+            );
+            $stmt->execute([$t, $day]);
+            $k = $stmt->fetch() ?: [];
+
+            assertTrue((int) $k['purchasers'] === 1, 'purchasers: ' . ($k['purchasers'] ?? 'none'));
+            assertTrue(
+                (int) $k['repeat_customers'] === 0,
+                'an unclassifiable buyer was reported as returning (' . $k['repeat_customers'] . ')'
+            );
+            assertTrue((int) $k['new_customers'] === 0, 'new: ' . $k['new_customers']);
+
+            return 'purchaser counted, classified as neither';
+        } finally {
+            $ruPdo->prepare('DELETE FROM tenants WHERE shop_domain = ?')->execute([$shop]);
+        }
+    });
+
+    check('resequencing leaves no stale numbers', function () use ($ruPdo) {
+        // resequence() used to assign over the top and only clear cancelled
+        // orders. An order that stopped qualifying — refunded, on a store that
+        // does not count refunds — kept the number it already had, so a person
+        // could hold two orders both numbered 1 and be counted as a first-time
+        // buyer twice, on two different days.
+        $shop = 'selftest-stale-seq.myshopify.com';
+        $ruPdo->prepare('DELETE FROM tenants WHERE shop_domain = ?')->execute([$shop]);
+
+        $t = Tenant::upsert($shop, [
+            'access_token'             => 'selftest',
+            'refresh_token'            => 'selftest',
+            'expires_in'               => 3600,
+            'refresh_token_expires_in' => 7776000,
+        ], 'read_orders');
+        Tenant::forgetCache();
+
+        $phone = Hash::pii($t, (string) Hash::normalisePhone('9876533333'));
+
+        try {
+            // Two orders, both counting at first.
+            foreach ([[920001, '-20 days'], [920002, '-10 days']] as [$id, $when]) {
+                $ruPdo->prepare(
+                    "INSERT INTO orders (tenant_id, order_id, phone_hash, created_at,
+                                         currency, total_minor, synced_at)
+                     VALUES (?, ?, ?, ?, 'INR', 100000, UTC_TIMESTAMP())"
+                )->execute([$t, $id, $phone, gmdate('Y-m-d H:i:s', strtotime($when))]);
+            }
+
+            foreach (Identity::unresolved($t, 50) as $o) { Identity::resolveOrder($t, $o); }
+            foreach (Identity::pendingResequence($t, 50) as $p) { Identity::resequence($t, $p); }
+
+            $seq = $ruPdo->prepare('SELECT order_id, order_sequence FROM orders WHERE tenant_id = ? ORDER BY order_id');
+            $seq->execute([$t]);
+            $before = array_column($seq->fetchAll(), 'order_sequence', 'order_id');
+            assertTrue(
+                (int) $before[920001] === 1 && (int) $before[920002] === 2,
+                'the fixture did not number both orders: ' . json_encode($before)
+            );
+
+            // The first is refunded and the store stops counting refunds.
+            $ruPdo->prepare("UPDATE orders SET financial_status = 'refunded' WHERE tenant_id = ? AND order_id = ?")
+                ->execute([$t, 920001]);
+            $ruPdo->prepare('UPDATE tenants SET refunded_counts_as_order = 0 WHERE tenant_id = ?')->execute([$t]);
+            Tenant::forgetCache();
+
+            $person = (int) $ruPdo->query(
+                "SELECT person_id FROM orders WHERE tenant_id = {$t} AND order_id = 920002"
+            )->fetchColumn();
+            Identity::resequence($t, $person);
+
+            $seq->execute([$t]);
+            $after = array_column($seq->fetchAll(), 'order_sequence', 'order_id');
+
+            assertTrue(
+                $after[920001] === null,
+                'the refunded order kept sequence ' . var_export($after[920001], true)
+            );
+            assertTrue(
+                (int) $after[920002] === 1,
+                'the surviving order should now be their first: got ' . var_export($after[920002], true)
+            );
+
+            return 'excluded order cleared, remaining renumbered';
+        } finally {
+            $ruPdo->prepare('DELETE FROM tenants WHERE shop_domain = ?')->execute([$shop]);
+        }
+    });
+
+    check('range figures count people, not buyer-days', function () use ($ruPdo) {
+        // A daily rollup counts distinct people PER DAY. Adding thirty of them
+        // counts somebody who bought on four days four times. New customers
+        // survive that (a person has a first-ever order exactly once) but
+        // returning customers do not — so the repeat rate divided buyer-days by
+        // (buyers + buyer-days) and read far too high.
+        $shop = 'selftest-range.myshopify.com';
+        $ruPdo->prepare('DELETE FROM tenants WHERE shop_domain = ?')->execute([$shop]);
+
+        $t = Tenant::upsert($shop, [
+            'access_token'             => 'selftest',
+            'refresh_token'            => 'selftest',
+            'expires_in'               => 3600,
+            'refresh_token_expires_in' => 7776000,
+        ], 'read_orders');
+        $ruPdo->prepare('UPDATE tenants SET iana_timezone = ? WHERE tenant_id = ?')
+            ->execute(['Asia/Kolkata', $t]);
+        Tenant::forgetCache();
+
+        $tz  = new DateTimeZone('Asia/Kolkata');
+        $utc = new DateTimeZone('UTC');
+        $day = static fn(int $ago): string =>
+            (new DateTimeImmutable('now', $tz))->modify("-{$ago} days")->format('Y-m-d');
+
+        $id  = 930000;
+        $put = static function (string $phone, int $ago) use ($ruPdo, $t, &$id, $day, $tz, $utc): void {
+            $ruPdo->prepare(
+                "INSERT INTO orders (tenant_id, order_id, phone_hash, created_at,
+                                     currency, total_minor, synced_at)
+                 VALUES (?, ?, ?, ?, 'INR', 100000, UTC_TIMESTAMP())"
+            )->execute([
+                $t, $id++, Hash::pii($t, (string) Hash::normalisePhone($phone)),
+                (new DateTimeImmutable($day($ago) . ' 10:00:00', $tz))
+                    ->setTimezone($utc)->format('Y-m-d H:i:s'),
+            ]);
+        };
+
+        try {
+            $put('9000000002', 60);   // B became a customer before the range
+            $put('9000000001', 24);   // A, first ever, inside the range
+            $put('9000000002', 22);   // B returns
+            $put('9000000001', 18);   // A again — still acquired in this range
+            $put('9000000003', 15);   // C, first ever
+            $put('9000000002', 10);   // B again — still one person
+
+            foreach (Identity::unresolved($t, 50) as $o) { Identity::resolveOrder($t, $o); }
+            foreach (Identity::pendingResequence($t, 50) as $p) { Identity::resequence($t, $p); }
+
+            $range = Report::range($t, $day(25), $day(5));
+            $b     = Report::buyersOverRange($t, $range);
+
+            assertTrue($b['buyers'] === 3, 'buyers: ' . $b['buyers']);
+            assertTrue($b['new'] === 2, 'new: ' . $b['new']);
+            // Not 3. B bought on three days inside the range and is one person.
+            assertTrue($b['returning'] === 1, 'returning: ' . $b['returning']);
+            assertTrue(
+                $b['rate'] !== null && abs($b['rate'] - 33.3) < 0.1,
+                'rate: ' . var_export($b['rate'], true)
+            );
+
+            return '3 buyers, 2 new, 1 returning, 33.3%';
         } finally {
             $ruPdo->prepare('DELETE FROM tenants WHERE shop_domain = ?')->execute([$shop]);
         }

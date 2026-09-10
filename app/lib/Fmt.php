@@ -230,18 +230,27 @@ final class Fmt
             return '/';
         }
 
-        if (strlen($path) <= $max) {
+        if (mb_strlen($path) <= $max) {
             return $path;
         }
 
         // Keep the end: the identifying part of a Shopify URL is the handle,
         // and truncating from the right hides exactly that.
-        return '…' . substr($path, -($max - 1));
+        //
+        // Counted in characters, not bytes. A byte slice can land inside a
+        // multibyte character, and htmlspecialchars() returns an EMPTY STRING
+        // for invalid UTF-8 — so a path with an accent or a Devanagari handle
+        // rendered as a blank cell rather than a shortened one.
+        return '…' . mb_substr($path, -($max - 1));
     }
 
     public static function e(?string $s): string
     {
-        return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8');
+        // ENT_SUBSTITUTE matters more than it looks. Without it
+        // htmlspecialchars() returns an EMPTY STRING for invalid UTF-8, so one
+        // bad byte anywhere in a value blanks the whole cell — losing the
+        // figure entirely rather than showing one odd character.
+        return htmlspecialchars((string) $s, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
     }
 
     private static function trim(float $n): string

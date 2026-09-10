@@ -75,6 +75,36 @@ final class Rollup
     }
 
     /**
+     * Every local date from `$from` to today, closed days included.
+     *
+     * pendingDays() deliberately stops at the reclose window, so a settled day
+     * is never recomputed on its own. That is right for ordinary running and
+     * wrong after a rollup's definition changes — the dashboard would then sum
+     * two different definitions of the same column across the boundary of the
+     * day the change shipped, with nothing on the page to say so.
+     *
+     * @return array<int,string>
+     */
+    public static function daysFrom(int $tenantId, string $from): array
+    {
+        $tz    = self::timezone($tenantId);
+        $start = new DateTimeImmutable($from, $tz);
+        $end   = new DateTimeImmutable('now', $tz);
+
+        $days = [];
+        for ($d = $start; $d->format('Y-m-d') <= $end->format('Y-m-d'); $d = $d->modify('+1 day')) {
+            $days[] = $d->format('Y-m-d');
+
+            // A guard against a typo'd year turning into a decade of work.
+            if (count($days) >= 1200) {
+                break;
+            }
+        }
+
+        return $days;
+    }
+
+    /**
      * Recompute every daily rollup for one local date.
      *
      * @return array<string,int> rows written per rollup
@@ -152,6 +182,7 @@ final class Rollup
                 COUNT(DISTINCT o.person_id)                               AS purchasers,
                 COALESCE(SUM(o.total_minor), 0)                           AS revenue_minor,
                 COALESCE(SUM(o.refunded_minor), 0)                        AS refunded_minor,
+                COUNT(DISTINCT CASE WHEN o.order_sequence IS NOT NULL THEN o.person_id END) AS sequenced,
                 COUNT(DISTINCT CASE WHEN o.order_sequence = 1 THEN o.person_id END) AS new_customers
                FROM orders o
               WHERE o.tenant_id = :tenant_id
@@ -172,9 +203,19 @@ final class Rollup
         // A person is new on the day they became a customer, and returning on
         // any later day they buy. Never both — "were they a customer before
         // today" has exactly one answer.
+        // Derived from buyers whose orders CARRY a sequence, not from every
+        // purchaser.
+        //
+        // A person can be a purchaser with no sequence at all: identity assigns
+        // person_id and numbers the orders in two separate passes, and a store
+        // that excludes refunds from the count leaves those orders unnumbered
+        // permanently. Subtracting from every purchaser sweeps all of them into
+        // "returning" — asserting a first-time buyer is a repeat one, which is
+        // worse than admitting we cannot say. An undercount is visible; a
+        // confident wrong answer is not.
         $or['repeat_customers'] = max(
             0,
-            (int) ($or['purchasers'] ?? 0) - (int) ($or['new_customers'] ?? 0)
+            (int) ($or['sequenced'] ?? 0) - (int) ($or['new_customers'] ?? 0)
         );
 
         // Units are a separate statement rather than a subquery because PDO
@@ -348,7 +389,7 @@ final class Rollup
                     COALESCE(a.campaign_id, 0) AS campaign_id,
                     COUNT(*)                        AS orders,
                     COALESCE(SUM(o.total_minor), 0) AS revenue_minor,
-                    COUNT(DISTINCT o.person_id)                                         AS buyers,
+                    COUNT(DISTINCT CASE WHEN o.order_sequence IS NOT NULL THEN o.person_id END) AS buyers,
                     COUNT(DISTINCT CASE WHEN o.order_sequence = 1 THEN o.person_id END) AS new_customers
                FROM orders o
                JOIN order_attribution a

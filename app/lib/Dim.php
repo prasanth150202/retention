@@ -51,7 +51,7 @@ final class Dim
         }
 
         $path = (string) (parse_url($url, PHP_URL_PATH) ?: '/');
-        $path = substr($path, 0, 512);
+        $path = (string) Text::fit($path, 512);
 
         return self::intern('dim_path', 'path_id', $tenantId, 'path_hash', Hash::dim($path), [
             'path'      => $path,
@@ -65,11 +65,11 @@ final class Dim
             return null;
         }
 
-        $url  = substr($url, 0, 512);
+        $url  = (string) Text::fit($url, 512);
         $host = strtolower((string) (parse_url($url, PHP_URL_HOST) ?: ''));
 
         return self::intern('dim_referrer', 'referrer_id', $tenantId, 'referrer_hash', Hash::dim($url), [
-            'referrer_host' => $host !== '' ? substr($host, 0, 191) : null,
+            'referrer_host' => Text::fitOrNull($host, 191),
             'referrer_url'  => $url,
         ]);
     }
@@ -100,7 +100,7 @@ final class Dim
         $utm = [];
         foreach (['source', 'medium', 'campaign', 'content', 'term'] as $k) {
             $v = $q['utm_' . $k] ?? null;
-            $utm[$k] = is_string($v) && $v !== '' ? substr($v, 0, 191) : null;
+            $utm[$k] = is_string($v) ? Text::fitOrNull($v, 191) : null;
         }
 
         $gclid  = isset($q['gclid'])  ? 1 : 0;
@@ -132,7 +132,7 @@ final class Dim
             return null;
         }
 
-        $ua = substr($ua, 0, 400);
+        $ua = (string) Text::fit($ua, 400);
         [$device, $browser, $os] = self::parseUserAgent($ua);
 
         return self::intern('dim_useragent', 'ua_id', $tenantId, 'ua_hash', Hash::dim($ua), [
@@ -184,9 +184,9 @@ final class Dim
             );
             $ins->execute([
                 $hash,
-                $country !== null ? substr($country, 0, 2) : null,
-                $region  !== null ? substr($region, 0, 96) : null,
-                $city    !== null ? substr($city, 0, 96) : null,
+                Text::fit($country, 2),
+                Text::fit($region, 96),
+                Text::fit($city, 96),
                 $geo['lat'] ?? null,
                 $geo['lon'] ?? null,
             ]);
@@ -202,7 +202,7 @@ final class Dim
             return null;
         }
 
-        $term = substr(trim($term), 0, 255);
+        $term = (string) Text::fit(trim($term), 255);
 
         return self::intern('dim_search_term', 'search_term_id', $tenantId, 'term_hash', Hash::dim(strtolower($term)), [
             'term' => $term,
@@ -215,9 +215,9 @@ final class Dim
             return null;
         }
 
-        $label    = $label    !== null ? substr($label, 0, 255) : null;
-        $selector = $selector !== null ? substr($selector, 0, 255) : null;
-        $href     = $href     !== null ? substr($href, 0, 512) : null;
+        $label    = Text::fit($label, 255);
+        $selector = Text::fit($selector, 255);
+        $href     = Text::fit($href, 512);
 
         $key = ($label ?? '') . "\x1f" . ($selector ?? '') . "\x1f" . ($href ?? '');
 

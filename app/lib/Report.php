@@ -103,21 +103,95 @@ final class Report
                 self::percent($prev['purchasers'], $prev['visitors'])
             ),
         ];
-        $metrics['repeat_pct'] = [
-            'value'  => self::percent(
-                $now['repeat_customers'],
-                $now['new_customers'] + $now['repeat_customers']
-            ),
-            'change' => self::change(
-                self::percent($now['repeat_customers'], $now['new_customers'] + $now['repeat_customers']),
-                self::percent($prev['repeat_customers'], $prev['new_customers'] + $prev['repeat_customers'])
-            ),
+        // New, returning and the repeat rate are counted over the whole range
+        // rather than summed from the daily rollups. Summing days would count
+        // one person once for every day they bought, so the tiles would not
+        // agree with each other and the rate would divide buyer-days by
+        // (buyers + buyer-days).
+        $buyersNow  = self::buyersOverRange($tenantId, $range);
+        $buyersPrev = self::buyersOverRange($tenantId, [
+            'from' => $range['prev_from'],
+            'to'   => $range['prev_to'],
+        ]);
+
+        $metrics['new_customers'] = [
+            'value'  => $buyersNow['new'],
+            'change' => self::change((float) $buyersNow['new'], (float) $buyersPrev['new']),
         ];
+        $metrics['repeat_customers'] = [
+            'value'  => $buyersNow['returning'],
+            'change' => self::change((float) $buyersNow['returning'], (float) $buyersPrev['returning']),
+        ];
+        $metrics['repeat_pct'] = [
+            'value'  => $buyersNow['rate'],
+            'change' => self::change($buyersNow['rate'], $buyersPrev['rate']),
+        ];
+        $metrics['buyers'] = ['value' => $buyersNow['buyers'], 'change' => null];
 
         $metrics['provisional'] = $now['provisional'];
         $metrics['has_data']    = $now['days'] > 0;
 
         return $metrics;
+    }
+
+    /**
+     * Distinct buyers over a whole range, split into new and returning.
+     *
+     * THE ONE METHOD HERE THAT READS `orders` RATHER THAN A ROLLUP, and it has
+     * to be, because this question cannot be answered by adding up days.
+     *
+     * A daily rollup counts distinct people PER DAY. Summing those over thirty
+     * days counts somebody who bought on four of them four times. For new
+     * customers that is still correct — a person has a first-ever order exactly
+     * once, so they can only appear on one day — but for returning customers it
+     * is not: the sum is buyer-days, not buyers. Dividing one by the other,
+     * which is what the repeat rate did, mixes the two units and reports a
+     * figure that is neither.
+     *
+     * Measured against the tenant's own calendar, and only over `orders`, which
+     * holds one row per order and is indexed on (tenant_id, person_id,
+     * created_at) — a different scale entirely from the event shard the rollup
+     * rule exists to keep the dashboard away from.
+     *
+     * @return array{buyers:int,new:int,returning:int,rate:?float}
+     */
+    public static function buyersOverRange(int $tenantId, array $range): array
+    {
+        $tz  = self::timezone($tenantId);
+        $utc = new DateTimeZone('UTC');
+
+        $from = (new DateTimeImmutable($range['from'] . ' 00:00:00', $tz))
+            ->setTimezone($utc)->format('Y-m-d H:i:s');
+        $to = (new DateTimeImmutable($range['to'] . ' 00:00:00', $tz))
+            ->modify('+1 day')->setTimezone($utc)->format('Y-m-d H:i:s');
+
+        $stmt = Db::core()->prepare(
+            'SELECT
+                COUNT(DISTINCT CASE WHEN order_sequence IS NOT NULL THEN person_id END) AS buyers,
+                COUNT(DISTINCT CASE WHEN order_sequence = 1 THEN person_id END)          AS new_buyers
+               FROM orders
+              WHERE tenant_id = :tenant_id
+                AND created_at >= :from AND created_at < :to
+                AND cancelled_at IS NULL
+                AND person_id IS NOT NULL'
+        );
+        $stmt->execute([':tenant_id' => $tenantId, ':from' => $from, ':to' => $to]);
+        $row = $stmt->fetch() ?: [];
+
+        $buyers = (int) ($row['buyers'] ?? 0);
+        $new    = (int) ($row['new_buyers'] ?? 0);
+
+        // Somebody whose first-ever order falls in this range is new for the
+        // range, even if they bought again inside it. Returning is everyone
+        // else who bought — those already customers when the range began.
+        $returning = max(0, $buyers - $new);
+
+        return [
+            'buyers'    => $buyers,
+            'new'       => $new,
+            'returning' => $returning,
+            'rate'      => self::percent($returning, $buyers),
+        ];
     }
 
     /**

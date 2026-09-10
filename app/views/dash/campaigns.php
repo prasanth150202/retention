@@ -124,7 +124,10 @@ $keep = ['from' => $range['from'], 'to' => $range['to']];
         <tbody>
           <?php foreach ($campaigns as $c): ?>
           <tr>
-            <td class="name">
+            <td class="name" title="<?= Fmt::e(trim(implode(' / ', array_filter([
+                $c['utm_source'] ?? null, $c['utm_medium'] ?? null, $c['utm_campaign'] ?? null,
+                $c['utm_content'] ?? null, $c['utm_term'] ?? null,
+            ])))) ?>">
               <?= Fmt::e((string) $c['name']) ?>
               <?php if (!empty($c['utm_content']) || !empty($c['utm_term'])): ?>
                 <div class="sub2"><?= Fmt::e(implode(' · ', array_filter([

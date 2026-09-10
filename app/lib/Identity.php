@@ -115,6 +115,17 @@ final class Identity
 
         $orderIds = $stmt->fetchAll(PDO::FETCH_COLUMN);
 
+        // Clear the whole person first, then number what qualifies.
+        //
+        // Assigning over the top leaves a stale number on any order that has
+        // since stopped qualifying — a refunded order on a store where refunds
+        // do not count, most obviously. That order keeps the sequence it had,
+        // so a person can end up with two orders both numbered 1, and be
+        // counted as a first-time buyer twice on two different days.
+        $pdo->prepare(
+            'UPDATE orders SET order_sequence = NULL WHERE tenant_id = ? AND person_id = ?'
+        )->execute([$tenantId, $personId]);
+
         $upd = $pdo->prepare(
             'UPDATE orders SET order_sequence = ? WHERE tenant_id = ? AND order_id = ?'
         );
@@ -125,12 +136,6 @@ final class Identity
             $n++;
         }
 
-        // Cancelled orders keep no sequence: they are not purchases and should
-        // not occupy a position that makes the next order look like a repeat.
-        $pdo->prepare(
-            'UPDATE orders SET order_sequence = NULL
-              WHERE tenant_id = ? AND person_id = ? AND cancelled_at IS NOT NULL'
-        )->execute([$tenantId, $personId]);
 
         $pdo->prepare('DELETE FROM resequence_queue WHERE tenant_id = ? AND person_id = ?')
             ->execute([$tenantId, $personId]);

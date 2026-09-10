@@ -32,6 +32,17 @@ $opts    = getopt('', ['env::', 'limit::', 'verbose']);
 $verbose = array_key_exists('verbose', $opts);
 $limit   = isset($opts['limit']) ? max(1, (int) $opts['limit']) : 200;
 
+/**
+ * Largest value each unsigned column can hold.
+ *
+ * Declared here, above the code that runs, and not beside uint() further
+ * down. PHP hoists function DECLARATIONS but executes top-level const
+ * statements in order — so a const sitting among the helper functions at
+ * the bottom of a script does not exist while the main loop is running.
+ */
+const UINT_INT    = 4294967295;
+const UINT_BIGINT = 9223372036854775807;
+
 odysseus_boot(odysseus_env_arg());
 
 $log = static function (string $msg) use ($verbose): void {
@@ -292,20 +303,20 @@ function mapEvent(array $e, int $tenantId): ?array
         'source'          => $source,
         'visitor_key'     => Dim::visitor($tenantId, (string) ($e['cid'] ?? '')) ?? 0,
         'person_id'       => null,
-        'customer_ref'    => isset($e['cu']) && $e['cu'] !== '' ? (int) $e['cu'] : null,
+        'customer_ref'    => uint($e['cu'] ?? null, UINT_BIGINT),
         'path_id'         => Dim::path($tenantId, $url),
         'referrer_id'     => Dim::referrer($tenantId, isset($e['r']) ? (string) $e['r'] : null),
         'campaign_id'     => Dim::campaign($tenantId, $url),
         'ua_id'           => Dim::userAgent($tenantId, isset($e['_ua']) ? (string) $e['_ua'] : null),
         'geo_id'          => Dim::geo(GeoIp::lookup($ip)),
-        'product_id'      => isset($e['p']) && $e['p'] !== '' ? (int) $e['p'] : null,
-        'variant_id'      => isset($e['v']) && $e['v'] !== '' ? (int) $e['v'] : null,
-        'qty'             => isset($e['q']) ? max(0, min(65535, (int) $e['q'])) : null,
-        'amount_minor'    => isset($e['a']) ? max(0, (int) round((float) $e['a'])) : null,
+        'product_id'      => uint($e['p'] ?? null, UINT_BIGINT),
+        'variant_id'      => uint($e['v'] ?? null, UINT_BIGINT),
+        'qty'             => uint($e['q'] ?? null, 65535),
+        'amount_minor'    => uint($e['a'] ?? null, UINT_INT),
         'currency_id'     => currencyId(isset($e['c']) ? (string) $e['c'] : null),
         'checkout_token'  => isset($e['ct']) && $e['ct'] !== ''
             ? Hash::uid64((string) $e['ct']) : null,
-        'order_ref'       => isset($e['o']) && $e['o'] !== '' ? (int) $e['o'] : null,
+        'order_ref'       => uint($e['o'] ?? null, UINT_BIGINT),
         'search_term_id'  => Dim::searchTerm($tenantId, isset($e['st']) ? (string) $e['st'] : null),
         'click_target_id' => Dim::clickTarget(
             $tenantId,
@@ -318,6 +329,16 @@ function mapEvent(array $e, int $tenantId): ?array
 
 /**
  * Batch insert with INSERT IGNORE on the dedup key.
+ *
+ * IGNORE is here for uq_event and nothing else — a replayed beacon must not
+ * become a second row. It does have a side effect worth knowing: IGNORE also
+ * turns an out-of-range value into a silent clamp, and strict mode does not
+ * override that. Every numeric written here is therefore bounded by uint()
+ * first, so IGNORE never has anything to hide.
+ *
+ * The alternative, ON DUPLICATE KEY UPDATE, does respect strict mode — but one
+ * bad event would then fail a batch of five hundred, which trades a wrong
+ * value for a lost file.
  *
  * This is what permanently closes the defect the prior audit found: 443
  * duplicate rows, of which two duplicated checkout_completed pairs overstated
@@ -356,6 +377,31 @@ function insertEvents(PDO $pdo, array $rows): array
 
     return ['accepted' => $accepted, 'duplicate' => count($rows) - $accepted];
 }
+
+/**
+ * An unsigned integer that fits its column, or null.
+ *
+ * Every one of these values arrives from a browser, so none of them can be
+ * trusted to be in range — a negative product id or an implausible order total
+ * is a malformed request, not an impossibility.
+ *
+ * This matters more than it looks, because the events insert uses
+ * INSERT IGNORE for deduplication, and IGNORE also downgrades an out-of-range
+ * value from an error to a silent clamp. Strict mode does not apply to it. So
+ * the range has to be enforced here, before the value is ever handed over,
+ * rather than assumed to be caught by the database.
+ */
+function uint(mixed $value, int $max): ?int
+{
+    if ($value === null || $value === '' || !is_numeric($value)) {
+        return null;
+    }
+
+    $n = (int) round((float) $value);
+
+    return $n < 0 ? null : min($n, $max);
+}
+
 
 function currencyId(?string $code): ?int
 {

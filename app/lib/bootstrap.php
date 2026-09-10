@@ -21,6 +21,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/Env.php';
 require_once __DIR__ . '/Config.php';
 require_once __DIR__ . '/Crypto.php';
+require_once __DIR__ . '/Text.php';
 require_once __DIR__ . '/Hash.php';
 require_once __DIR__ . '/EventType.php';
 require_once __DIR__ . '/Db.php';
