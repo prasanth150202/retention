@@ -2001,6 +2001,60 @@ check('no events belong to a store we no longer have', function () {
 
     return "{$shards} shard(s) clean";
 });
+check('Shopify API version is current', function () {
+    // Shopify supports each stable version for 12 months, then FALLS FORWARD
+    // rather than erroring: requests to an expired version are quietly served
+    // by the oldest supported one. So an app on a dead version keeps working
+    // while no longer being pinned to anything it was written against, and
+    // nothing anywhere says so. This is the only place that notices.
+    //
+    // It also matters for submission: Shopify will not accept an app on a
+    // version due to expire within 90 days.
+    //
+    // From shopify.dev/docs/api/usage/versioning. Update when this list ages
+    // past the end — the check fails rather than guesses.
+    $schedule = [
+        '2025-01' => '2026-01-16', '2025-04' => '2026-04-16',
+        '2025-07' => '2026-07-16', '2025-10' => '2026-10-16',
+        '2026-01' => '2027-01-16', '2026-04' => '2027-04-16',
+        '2026-07' => '2027-07-16', '2026-10' => '2027-10-16',
+    ];
+
+    $configured = (string) Config::get('shopify.api_version', '');
+    assertTrue($configured !== '', 'no API version configured');
+    assertTrue(
+        isset($schedule[$configured]),
+        "'{$configured}' is not a version this check knows — extend the schedule"
+    );
+
+    $expires = strtotime($schedule[$configured] . ' 15:00:00 UTC');
+    $days    = (int) floor(($expires - time()) / 86400);
+
+    assertTrue($days > 0, "API version {$configured} expired " . abs($days) . ' days ago');
+    assertTrue(
+        $days > 90,
+        "API version {$configured} expires in {$days} days; Shopify will not "
+        . 'accept a submission on it, and it falls forward silently after that'
+    );
+
+    // A release candidate is one whose release date has not passed. Shopify
+    // ships breaking changes into those and says not to run them in
+    // production, but the CLI defaults new apps to the newest it knows.
+    $released = strtotime(substr($configured, 0, 4) . '-' . substr($configured, 5, 2) . '-01 17:00:00 UTC');
+    assertTrue($released < time(), "API version {$configured} is a release candidate, not stable");
+
+    // The webhook version in the app config has to agree, or webhook payloads
+    // arrive shaped differently from everything the sync code expects.
+    $toml = (string) @file_get_contents(dirname(__DIR__) . '/shopify/shopify.app.toml');
+    if (preg_match('/api_version\s*=\s*"([^"]+)"/', $toml, $m)) {
+        assertTrue(
+            $m[1] === $configured,
+            "shopify.app.toml says {$m[1]} but the app is configured for {$configured}"
+        );
+    }
+
+    return "{$configured}, stable for another " . number_format($days) . ' days';
+});
 check('shard size measured', function () {
     $m = Shard::measure(Shard::current());
     return sprintf(

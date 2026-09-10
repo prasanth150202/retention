@@ -186,7 +186,14 @@ return [
     // Shopify
     // -----------------------------------------------------------------
     'shopify' => [
-        'api_version'   => Env::get('SHOPIFY_API_VERSION', '2025-07'),
+        // Shopify supports a stable version for 12 months and falls FORWARD
+        // silently when yours expires — the app keeps working while no longer
+        // being pinned to the behaviour it was written against, which is the
+        // worst of both. bin/selftest.php fails when this goes stale.
+        //
+        // Never a release candidate: Shopify ships breaking changes into
+        // those, and the CLI will happily default a new app to one.
+        'api_version'   => Env::get('SHOPIFY_API_VERSION', '2026-07'),
 
         // One app, one credential pair - not one per store. Public
         // distribution means these are ours and live in .env.

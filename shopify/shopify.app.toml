@@ -20,7 +20,7 @@ handle = "retention-dashboard"
 
 # Filled by `shopify app config link`. Left blank so a copy of this file
 # cannot silently deploy over somebody else's app.
-client_id = ""
+client_id = "f53cb10aa7084449146c730ee5c7d791"
 
 application_url = "https://retention.digifyce.com/"
 
@@ -89,7 +89,7 @@ redirect_urls = [ "https://retention.digifyce.com/oauth/callback.php" ]
 # days; shop/redact deletes everything for a store that uninstalled.
 # ---------------------------------------------------------------------
 [webhooks]
-api_version = "2025-07"
+api_version = "2026-07"
 
   [[webhooks.subscriptions]]
   uri = "/webhooks/app.php"

@@ -11,6 +11,7 @@
 type = "web_pixel_extension"
 name = "Retention Dashboard"
 runtime_context = "strict"
+uid = "3e40cf63-477f-6cf9-0906-befefc9a3dcf3e9a5667"
 
 
 # ---------------------------------------------------------------------
