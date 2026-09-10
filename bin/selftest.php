@@ -860,6 +860,222 @@ if ($envFile !== null) {
 }
 
 // -----------------------------------------------------------------
+// Attribution
+//
+// This is the tab a merchant checks their ad spend against, so being
+// quietly wrong here costs them money. Plants events on the shard and
+// orders in core, then removes both — local runs only.
+echo "\nAttribution\n";
+
+if ($envFile !== null) {
+    foreach ([
+        'UTM outranks referrer',
+        'first and last touch differ',
+        'touch outside the lookback is not credited',
+        'cross-device touch is credited',
+        'no touch reads as Direct/Untracked',
+        'unrecognised tag is not filed as Direct',
+        'orders inside the grace window are left alone',
+        'an attributed order is not revisited',
+    ] as $label) {
+        skip($label, 'writes test events; local runs only');
+    }
+} else {
+    $atShop = 'selftest-attribution.myshopify.com';
+    $atPdo  = Db::core();
+    $atPdo->prepare('DELETE FROM tenants WHERE shop_domain = ?')->execute([$atShop]);
+
+    $atT = Tenant::upsert($atShop, [
+        'access_token'             => 'selftest',
+        'refresh_token'            => 'selftest',
+        'expires_in'               => 3600,
+        'refresh_token_expires_in' => 7776000,
+    ], 'read_orders');
+
+    $atShard = Shard::connectionForDate(date('Y-m-d'));
+    $atShard->prepare('DELETE FROM events WHERE tenant_id = ?')->execute([$atT]);
+
+    $atUid = 1;
+
+    /** A campaign-bearing page view, interned exactly as the importer does. */
+    $atTouch = static function (int $visitorKey, string $when, ?string $url, ?string $referrer = null)
+        use ($atShard, $atT, &$atUid): void {
+        $atShard->prepare(
+            'INSERT INTO events (tenant_id, event_uid, occurred_at, received_at, event_type,
+                                 source, visitor_key, path_id, referrer_id, campaign_id)
+             VALUES (?,?,?,?,?,?,?,?,?,?)'
+        )->execute([
+            $atT, $atUid++, $when, $when,
+            EventType::PAGE_VIEWED, EventType::SOURCE_PIXEL,
+            $visitorKey,
+            Dim::path($atT, $url),
+            Dim::referrer($atT, $referrer),
+            Dim::campaign($atT, $url),
+        ]);
+    };
+
+    $atOrder = static function (int $orderId, string $when, ?int $visitorKey, ?int $personId = null)
+        use ($atPdo, $atT): void {
+        $atPdo->prepare(
+            "INSERT INTO orders (tenant_id, order_id, visitor_key, person_id, created_at,
+                                 currency, total_minor, synced_at)
+             VALUES (?, ?, ?, ?, ?, 'INR', 100000, UTC_TIMESTAMP())"
+        )->execute([$atT, $orderId, $visitorKey, $personId, $when]);
+    };
+
+    /** @return array<string,mixed>|null */
+    $atRow = static function (int $orderId, string $model) use ($atPdo, $atT): ?array {
+        $stmt = $atPdo->prepare(
+            'SELECT a.channel, a.touch_at, c.utm_source
+               FROM order_attribution a
+               LEFT JOIN dim_campaign c
+                      ON c.tenant_id = a.tenant_id AND c.campaign_id = a.campaign_id
+              WHERE a.tenant_id = ? AND a.order_id = ? AND a.model = ?'
+        );
+        $stmt->execute([$atT, $orderId, $model]);
+
+        return $stmt->fetch() ?: null;
+    };
+
+    $atDay = static fn(int $ago): string => date('Y-m-d H:i:s', strtotime("-{$ago} days"));
+
+    // ---- plant everything, then resolve once ----------------------
+    $vRef    = Dim::visitor($atT, 'st-referrer');
+    $vTwo    = Dim::visitor($atT, 'st-two-touches');
+    $vOld    = Dim::visitor($atT, 'st-old-touch');
+    $vPhone  = Dim::visitor($atT, 'st-phone');
+    $vLaptop = Dim::visitor($atT, 'st-laptop');
+    $vNone   = Dim::visitor($atT, 'st-no-touch');
+    $vOdd    = Dim::visitor($atT, 'st-odd-tag');
+    $vFresh  = Dim::visitor($atT, 'st-fresh');
+
+    $atPdo->prepare('INSERT INTO persons (tenant_id, first_seen, last_seen) VALUES (?,?,?)')
+        ->execute([$atT, $atDay(10), $atDay(1)]);
+    $atPerson = (int) $atPdo->lastInsertId();
+    $atPdo->prepare(
+        'UPDATE dim_visitor SET person_id = ? WHERE tenant_id = ? AND visitor_key IN (?, ?)'
+    )->execute([$atPerson, $atT, $vPhone, $vLaptop]);
+
+    $atTouch($vRef, $atDay(6), 'https://s.test/?utm_source=instagram&utm_medium=social', 'https://l.facebook.com/');
+    $atOrder(4001, $atDay(5), $vRef);
+
+    $atTouch($vTwo, $atDay(20), 'https://s.test/?utm_source=instagram&utm_campaign=launch');
+    $atTouch($vTwo, $atDay(2), 'https://s.test/?utm_source=klaviyo&utm_medium=email');
+    $atOrder(4002, $atDay(1), $vTwo);
+
+    $atTouch($vOld, $atDay(45), 'https://s.test/?utm_source=instagram&utm_campaign=ancient');
+    $atOrder(4003, $atDay(1), $vOld);
+
+    $atTouch($vPhone, $atDay(3), 'https://s.test/?utm_source=instagram&utm_campaign=reels');
+    $atOrder(4004, $atDay(1), $vLaptop, $atPerson);
+
+    $atOrder(4005, $atDay(1), $vNone);
+
+    $atTouch($vOdd, $atDay(2), 'https://s.test/?utm_source=nosuchnetwork&utm_medium=banner');
+    $atOrder(4006, $atDay(1), $vOdd);
+
+    $atOrder(4007, date('Y-m-d H:i:s', time() - 600), $vFresh);
+
+    $atPending = Attribution::pending($atT, 500);
+    Attribution::resolveBatch($atT, $atPending);
+
+    check('UTM outranks referrer', function () use ($atRow) {
+        // The audit's 392 visitors: Instagram UTMs arriving with a
+        // l.facebook.com referrer. Crediting Instagram is correct — an
+        // explicit tag beats a referrer header — and the point of moving the
+        // rules into a table is that this is now a decision anyone can read.
+        assertTrue($atRow(4001, 'pixel_last')['channel'] === 'Instagram', 'referrer won over the UTM tag');
+
+        return 'Instagram over l.facebook.com';
+    });
+
+    check('first and last touch differ', function () use ($atRow) {
+        // If these two ever collapse into the same answer, the Campaigns tab
+        // is showing one model twice and the comparison it exists for is gone.
+        $first = $atRow(4002, 'pixel_first');
+        $last  = $atRow(4002, 'pixel_last');
+
+        assertTrue($first['utm_source'] === 'instagram', 'first touch was ' . var_export($first['utm_source'], true));
+        assertTrue($last['utm_source'] === 'klaviyo', 'last touch was ' . var_export($last['utm_source'], true));
+        assertTrue($last['channel'] === 'Email', 'klaviyo did not classify as Email');
+
+        return 'discovery Instagram, conversion Email';
+    });
+
+    check('touch outside the lookback is not credited', function () use ($atRow) {
+        // 45 days before the order. Crediting it would hand a campaign revenue
+        // no ad platform would agree it earned.
+        assertTrue(
+            $atRow(4003, 'pixel_last')['channel'] === 'Direct/Untracked',
+            'a 45-day-old touch was credited'
+        );
+
+        return '45-day-old touch ignored';
+    });
+
+    check('cross-device touch is credited', function () use ($atRow) {
+        // Saw the ad on a phone, bought on a laptop. Two visitors, one person.
+        // Without the person-level union this reads as Direct, and every
+        // social campaign looks worse than it is.
+        assertTrue(
+            $atRow(4004, 'pixel_last')['channel'] === 'Instagram',
+            'the phone touch was not credited to the laptop purchase'
+        );
+
+        return 'phone touch credited to a laptop order';
+    });
+
+    check('no touch reads as Direct/Untracked', function () use ($atRow) {
+        $row = $atRow(4005, 'pixel_last');
+        assertTrue($row !== null, 'no row was written for an order with no touches');
+        assertTrue($row['channel'] === 'Direct/Untracked', 'got ' . var_export($row['channel'], true));
+        assertTrue($row['touch_at'] === null, 'a touch time was recorded for an order with no touch');
+
+        return 'recorded, not skipped';
+    });
+
+    check('unrecognised tag is not filed as Direct', function () use ($atRow) {
+        // utm_source=nosuchnetwork is tracked traffic the store has no rule
+        // for. Filing it under Direct would hide real campaign spend inside
+        // the bucket merchants read as "people who typed the URL".
+        assertTrue(
+            $atRow(4006, 'pixel_last')['channel'] === 'Other',
+            'an unrecognised tag was filed as ' . var_export($atRow(4006, 'pixel_last')['channel'], true)
+        );
+
+        return 'Other, so a missing rule is visible';
+    });
+
+    check('orders inside the grace window are left alone', function () use ($atRow) {
+        // The pixel spools to disk and the importer drains it every five
+        // minutes, so an order can beat its own checkout event into the
+        // database. Attributing at once would freeze Direct onto orders whose
+        // touches had simply not landed.
+        assertTrue($atRow(4007, 'pixel_last') === null, 'a ten-minute-old order was attributed');
+
+        return 'ten-minute-old order deferred';
+    });
+
+    check('an attributed order is not revisited', function () use ($atT) {
+        // Orders that found a campaign are done. Orders that found nothing are
+        // deliberately re-examined until the reclose window shuts, because a
+        // late touch can still upgrade them.
+        $again = array_column(Attribution::pending($atT, 500), 'order_id');
+        sort($again);
+
+        assertTrue(
+            array_map('intval', $again) === [4003, 4005],
+            'expected only the two campaign-less orders to be revisited, got ' . json_encode($again)
+        );
+
+        return 'only the 2 campaign-less orders, inside reclose';
+    });
+
+    $atShard->prepare('DELETE FROM events WHERE tenant_id = ?')->execute([$atT]);
+    $atPdo->prepare('DELETE FROM tenants WHERE shop_domain = ?')->execute([$atShop]);
+}
+
+// -----------------------------------------------------------------
 echo "\nStorage headroom\n";
 
 check('shard size measured', function () {

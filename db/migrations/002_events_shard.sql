@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS events (
   event_type      TINYINT UNSIGNED NOT NULL,   -- see EventType map below
   source          TINYINT UNSIGNED NOT NULL,   -- 1 = shopify_pixel, 2 = liquid
   visitor_key     INT UNSIGNED     NOT NULL,   -- -> odys_core.dim_visitor
-  person_id       BIGINT UNSIGNED  NULL,       -- backfilled by identity_resolve (M3)
+  person_id       BIGINT UNSIGNED  NULL,       -- reserved; see note below
   customer_ref    BIGINT UNSIGNED  NULL,       -- Shopify customer id, liquid feed only
   path_id         INT UNSIGNED     NULL,       -- -> dim_path
   referrer_id     INT UNSIGNED     NULL,       -- -> dim_referrer
@@ -52,6 +52,21 @@ CREATE TABLE IF NOT EXISTS events (
 ) ENGINE=InnoDB
   ROW_FORMAT=COMPRESSED KEY_BLOCK_SIZE=8
   DEFAULT CHARSET=ascii;
+
+-- ---------------------------------------------------------------------
+-- Why events.person_id stays NULL
+-- ---------------------------------------------------------------------
+-- Nothing writes it and nothing reads it. Attribution reaches a buyer
+-- through visitor_key -> dim_visitor.person_id instead, which is the
+-- seam that survives an identity merge: merging two people rewrites a
+-- handful of dim_visitor rows in core, where stamping person_id onto
+-- events would mean rewriting millions of rows across every shard,
+-- every time two guest orders turn out to be the same shopper.
+--
+-- The column costs one bit in the NULL bitmap, so it is left in place
+-- rather than migrated away. Do not build on it without reading the
+-- merge path in app/lib/Identity.php first.
+-- ---------------------------------------------------------------------
 
 -- ---------------------------------------------------------------------
 -- Why there is no PARTITION clause

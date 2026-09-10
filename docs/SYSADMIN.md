@@ -9,7 +9,7 @@ in hPanel; no shell access is required.
 
 ## 1. Scheduled jobs
 
-Five cron entries. Without them the site still accepts data but nothing is
+Six cron entries. Without them the site still accepts data but nothing is
 ever processed — events pile up in a spool directory and the dashboard stays
 empty.
 
@@ -33,16 +33,22 @@ sends you:
 /usr/bin/php -v
 ```
 
-### The five jobs
+### The six jobs
 
-Replace `<account>` and `<site>` with the real values. All five take an
+Replace `<account>` and `<site>` with the real values. All six take an
 absolute path — cron does not run from the site directory.
+
+The hourly three run in order — sync, then identity, then attribution — because
+each uses what the one before it worked out. Twenty minutes apart is generous
+for the volumes involved; if one overruns, the next simply picks up the
+remainder on its following run.
 
 | Schedule | Command | Purpose |
 |---|---|---|
 | `*/5 * * * *` | `/usr/bin/php /home/<account>/domains/<site>/public_html/app/cron/import.php` | Move captured events into the database |
 | `0 * * * *` | `/usr/bin/php /home/<account>/domains/<site>/public_html/app/cron/sync.php` | Pull orders and customers from Shopify |
-| `45 * * * *` | `/usr/bin/php /home/<account>/domains/<site>/public_html/app/cron/identity.php` | Work out which orders belong to the same person |
+| `20 * * * *` | `/usr/bin/php /home/<account>/domains/<site>/public_html/app/cron/identity.php` | Work out which orders belong to the same person |
+| `40 * * * *` | `/usr/bin/php /home/<account>/domains/<site>/public_html/app/cron/attribute.php` | Work out which campaign each order came from |
 | `15 * * * *` | `/usr/bin/php /home/<account>/domains/<site>/public_html/app/cron/health_check.php --quiet` | Watch for silent failures and email alerts |
 | `30 3 * * *` | `/usr/bin/php /home/<account>/domains/<site>/public_html/app/cron/purge.php` | Delete data for stores that uninstalled, once their retention period has passed |
 
@@ -69,6 +75,13 @@ new orders keep arriving but repeat-purchase and cohort numbers quietly stop
 moving. It runs after `sync.php` because it works on orders that sync has
 already pulled. Chunked and resumable: a store with years of history is
 drained over several runs rather than one that a time limit kills halfway.
+
+**`attribute.php`** — decides which campaign gets credit for each order, and
+sorts every order into a channel (Instagram, Email, Paid Search…). Runs after
+`identity.php` because a repeat buyer's phone browsing only counts towards a
+laptop purchase once both browsers are known to belong to the same person.
+If it stops, the Campaigns tab freezes while revenue keeps arriving, so the
+numbers look plausible and are wrong — which is worse than an empty tab.
 
 **`purge.php`** — deletes data for stores that uninstalled, once the retention
 period configured in `.env` has passed. Shopify's `shop/redact` webhook covers

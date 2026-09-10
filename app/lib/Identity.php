@@ -153,6 +153,53 @@ final class Identity
         return $stmt->fetchAll();
     }
 
+    /**
+     * Attach browsers to the people who used them.
+     *
+     * An order knows both its person and the browser that placed it, so the
+     * pairing is already in front of us; this writes it onto dim_visitor where
+     * attribution can reach it. That is what lets a repeat buyer's phone
+     * browsing be credited to a purchase they finished on a laptop.
+     *
+     * FIRST CLAIM WINS. A visitor already assigned to somebody is left alone,
+     * even when a later order says otherwise. The usual cause of the conflict
+     * is a shared household device, and reassigning it would silently move a
+     * previous order's attribution to a different person — a number that
+     * changes with no event to explain it is worse than one that is
+     * conservatively stale.
+     *
+     * @return int visitors newly attached
+     */
+    public static function linkVisitors(int $tenantId, int $limit = 2000): int
+    {
+        $pdo = Db::core();
+
+        $stmt = $pdo->prepare(
+            'SELECT DISTINCT o.visitor_key, o.person_id
+               FROM orders o
+               JOIN dim_visitor v
+                 ON v.tenant_id = o.tenant_id AND v.visitor_key = o.visitor_key
+              WHERE o.tenant_id = ?
+                AND o.visitor_key IS NOT NULL
+                AND o.person_id  IS NOT NULL
+                AND v.person_id  IS NULL
+              LIMIT ' . (int) $limit
+        );
+        $stmt->execute([$tenantId]);
+
+        $upd = $pdo->prepare(
+            'UPDATE dim_visitor SET person_id = ?
+              WHERE tenant_id = ? AND visitor_key = ? AND person_id IS NULL'
+        );
+
+        $n = 0;
+        foreach ($stmt->fetchAll() as $row) {
+            $upd->execute([(int) $row['person_id'], $tenantId, (int) $row['visitor_key']]);
+            $n += $upd->rowCount();
+        }
+
+        return $n;
+    }
     /** @return array<int,int> person ids awaiting resequencing */
     public static function pendingResequence(int $tenantId, int $limit = 500): array
     {
@@ -313,6 +360,13 @@ final class Identity
 
         $pdo->prepare(
             'UPDATE customers SET person_id = ? WHERE tenant_id = ? AND person_id = ?'
+        )->execute([$survivor, $tenantId, $absorbed]);
+
+        // Browsers move with the person. Attribution reaches a buyer's touches
+        // through dim_visitor, so a merge that skipped this would leave the
+        // survivor's cross-device history pointing at a person nothing reads.
+        $pdo->prepare(
+            'UPDATE dim_visitor SET person_id = ? WHERE tenant_id = ? AND person_id = ?'
         )->execute([$survivor, $tenantId, $absorbed]);
 
         // The absorbed row is kept, pointing at its survivor. Deleting it would

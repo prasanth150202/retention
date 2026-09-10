@@ -45,7 +45,7 @@ if (!Job::lock('identity')) {
 }
 
 $jobId  = Job::start('identity');
-$totals = ['resolved' => 0, 'created' => 0, 'merged' => 0, 'resequenced' => 0, 'failed' => 0];
+$totals = ['resolved' => 0, 'created' => 0, 'merged' => 0, 'resequenced' => 0, 'visitors' => 0, 'failed' => 0];
 
 try {
     $sql = "SELECT tenant_id, display_name FROM tenants WHERE status = 'active'";
@@ -79,6 +79,11 @@ try {
                 Identity::resequence($tid, $personId);
                 $totals['resequenced']++;
             }
+
+            // Last, because it reads the person ids the two steps above just
+            // settled. Attribution reaches a buyer's browsing through these
+            // rows, so it has to happen before the attribution job runs.
+            $totals['visitors'] += Identity::linkVisitors($tid, $limit);
         } catch (Throwable $e) {
             $totals['failed']++;
             $log("    FAILED: " . $e->getMessage());
@@ -101,9 +106,10 @@ try {
 Job::unlock('identity');
 
 printf(
-    "identity: %d order(s) resolved, %d person(s) created, %d merge(s), %d resequenced, %d failed\n",
+    "identity: %d order(s) resolved, %d person(s) created, %d merge(s), %d resequenced, "
+    . "%d visitor(s) linked, %d failed\n",
     $totals['resolved'], $totals['created'], $totals['merged'],
-    $totals['resequenced'], $totals['failed']
+    $totals['resequenced'], $totals['visitors'], $totals['failed']
 );
 
 exit($totals['failed'] > 0 ? 1 : 0);
