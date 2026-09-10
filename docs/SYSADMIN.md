@@ -9,7 +9,7 @@ in hPanel; no shell access is required.
 
 ## 1. Scheduled jobs
 
-Four cron entries. Without them the site still accepts data but nothing is
+Five cron entries. Without them the site still accepts data but nothing is
 ever processed — events pile up in a spool directory and the dashboard stays
 empty.
 
@@ -33,15 +33,16 @@ sends you:
 /usr/bin/php -v
 ```
 
-### The four jobs
+### The five jobs
 
-Replace `<account>` and `<site>` with the real values. All four take an
+Replace `<account>` and `<site>` with the real values. All five take an
 absolute path — cron does not run from the site directory.
 
 | Schedule | Command | Purpose |
 |---|---|---|
 | `*/5 * * * *` | `/usr/bin/php /home/<account>/domains/<site>/public_html/app/cron/import.php` | Move captured events into the database |
 | `0 * * * *` | `/usr/bin/php /home/<account>/domains/<site>/public_html/app/cron/sync.php` | Pull orders and customers from Shopify |
+| `45 * * * *` | `/usr/bin/php /home/<account>/domains/<site>/public_html/app/cron/identity.php` | Work out which orders belong to the same person |
 | `15 * * * *` | `/usr/bin/php /home/<account>/domains/<site>/public_html/app/cron/health_check.php --quiet` | Watch for silent failures and email alerts |
 | `30 3 * * *` | `/usr/bin/php /home/<account>/domains/<site>/public_html/app/cron/purge.php` | Delete data for stores that uninstalled, once their retention period has passed |
 
@@ -60,6 +61,14 @@ accumulate on disk indefinitely; they are safe, but invisible.
 **`sync.php`** — pulls order and customer records from Shopify. Revenue and
 retention figures come from here, not from the browser. Safe to run when no
 store is connected; it exits immediately.
+
+**`identity.php`** — decides which orders came from the same shopper, and
+numbers each person's orders 1, 2, 3. Every retention figure in the product is
+a statement about somebody buying more than once, so if this stops running,
+new orders keep arriving but repeat-purchase and cohort numbers quietly stop
+moving. It runs after `sync.php` because it works on orders that sync has
+already pulled. Chunked and resumable: a store with years of history is
+drained over several runs rather than one that a time limit kills halfway.
 
 **`purge.php`** — deletes data for stores that uninstalled, once the retention
 period configured in `.env` has passed. Shopify's `shop/redact` webhook covers

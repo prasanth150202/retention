@@ -656,6 +656,210 @@ check('compliance request log exists', function () {
 });
 
 // -----------------------------------------------------------------
+// Identity resolution
+//
+// Every retention number the product sells is a claim about one person
+// buying more than once, so these are the checks that decide whether the
+// headline figure is true. They plant orders and remove them again, which
+// is why they run only against the local database.
+echo "\nIdentity resolution\n";
+
+if ($envFile !== null) {
+    foreach ([
+        'guest orders resolve to one person',
+        'deferred merge joins two persons',
+        'unidentifiable order still counts',
+        'cancelled order takes no position',
+        'identity does not cross tenants',
+    ] as $label) {
+        skip($label, 'writes test orders; local runs only');
+    }
+} else {
+    $idPdo   = Db::core();
+    $idShops = ['selftest-identity-a.myshopify.com', 'selftest-identity-b.myshopify.com'];
+
+    $idClean = static function () use ($idPdo, $idShops): void {
+        foreach ($idShops as $shop) {
+            $idPdo->prepare('DELETE FROM tenants WHERE shop_domain = ?')->execute([$shop]);
+        }
+    };
+    $idClean();
+
+    $idTenant = static fn(string $shop): int => Tenant::upsert($shop, [
+        'access_token'             => 'selftest',
+        'refresh_token'            => 'selftest',
+        'expires_in'               => 3600,
+        'refresh_token_expires_in' => 7776000,
+    ], 'read_orders');
+
+    /** Plant one order with hashed contact keys, exactly as sync.php does. */
+    $idOrder = static function (
+        int $tenantId,
+        int $orderId,
+        string $createdAt,
+        ?int $customerId = null,
+        ?string $email = null,
+        ?string $phone = null,
+        ?string $cancelledAt = null
+    ) use ($idPdo): void {
+        $e = $email !== null ? Hash::pii($tenantId, (string) Hash::normaliseEmail($email)) : null;
+        $p = $phone !== null ? Hash::pii($tenantId, (string) Hash::normalisePhone($phone)) : null;
+
+        $idPdo->prepare(
+            "INSERT INTO orders (tenant_id, order_id, shopify_customer_id, email_hash, phone_hash,
+                                 created_at, cancelled_at, currency, total_minor, synced_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, 'INR', 100000, UTC_TIMESTAMP())"
+        )->execute([$tenantId, $orderId, $customerId, $e, $p, $createdAt, $cancelledAt]);
+    };
+
+    /** Drain the work the way app/cron/identity.php does. */
+    $idRun = static function (int $tenantId): void {
+        foreach (Identity::unresolved($tenantId) as $order) {
+            Identity::resolveOrder($tenantId, $order);
+        }
+        foreach (Identity::pendingResequence($tenantId) as $personId) {
+            Identity::resequence($tenantId, $personId);
+        }
+    };
+
+    /** @return array<int,array{person:int,seq:int|null}> keyed by order id */
+    $idRows = static function (int $tenantId) use ($idPdo): array {
+        $stmt = $idPdo->prepare(
+            'SELECT order_id, person_id, order_sequence FROM orders WHERE tenant_id = ?'
+        );
+        $stmt->execute([$tenantId]);
+
+        $out = [];
+        foreach ($stmt->fetchAll() as $r) {
+            $out[(int) $r['order_id']] = [
+                'person' => (int) $r['person_id'],
+                'seq'    => $r['order_sequence'] === null ? null : (int) $r['order_sequence'],
+            ];
+        }
+
+        return $out;
+    };
+
+    $idA = $idTenant($idShops[0]);
+
+    check('guest orders resolve to one person', function () use ($idA, $idOrder, $idRun, $idRows) {
+        // The case the whole layer exists for: two guest checkouts sharing a
+        // phone but not an email, then an account created with the second
+        // email. Grouping by customer_id sees a one-order customer and two
+        // anonymous orders, and reports a repeat rate of zero.
+        $idOrder($idA, 1001, '2026-01-10 10:00:00', null, 'priya@example.com', '9876543210');
+        $idOrder($idA, 1002, '2026-03-15 10:00:00', null, 'priya.work@example.com', '+91 98765 43210');
+        $idOrder($idA, 1003, '2026-06-20 10:00:00', 55501, 'priya.work@example.com', null);
+        $idOrder($idA, 1004, '2026-02-01 10:00:00', 55502, 'someone@example.com', '9000000001');
+        $idRun($idA);
+
+        $r = $idRows($idA);
+        assertTrue($r[1001]['person'] === $r[1002]['person'], 'same phone did not merge');
+        assertTrue($r[1002]['person'] === $r[1003]['person'], 'same email did not merge');
+        assertTrue($r[1004]['person'] !== $r[1001]['person'], 'an unrelated buyer was merged in');
+        assertTrue(
+            [$r[1001]['seq'], $r[1002]['seq'], $r[1003]['seq'], $r[1004]['seq']] === [1, 2, 3, 1],
+            'sequences wrong: ' . json_encode(array_column($r, 'seq'))
+        );
+
+        return '3 orders, 1 person, seq 1-2-3';
+    });
+
+    check('deferred merge joins two persons', function () use ($idA, $idOrder, $idRun, $idRows, $idPdo) {
+        // Two persons already exist before anything links them. Resolution has
+        // to follow merged_into rather than assume a key still points at a
+        // surviving person, or the absorbed person keeps its orders.
+        $idOrder($idA, 2001, '2026-01-05 10:00:00', null, 'raj@example.com', null);
+        $idOrder($idA, 2002, '2026-02-05 10:00:00', null, null, '9111111111');
+        $idRun($idA);
+
+        $before = $idRows($idA);
+        assertTrue($before[2001]['person'] !== $before[2002]['person'], 'unlinked orders merged early');
+
+        $idOrder($idA, 2003, '2026-03-05 10:00:00', null, 'raj@example.com', '9111111111');
+        $idRun($idA);
+
+        $after = $idRows($idA);
+        assertTrue(
+            $after[2001]['person'] === $after[2002]['person']
+                && $after[2002]['person'] === $after[2003]['person'],
+            'the linking order did not merge the two persons'
+        );
+        assertTrue(
+            [$after[2001]['seq'], $after[2002]['seq'], $after[2003]['seq']] === [1, 2, 3],
+            'the surviving person was not resequenced'
+        );
+
+        // A merge is occasionally wrong - a shared family phone is the usual
+        // cause - so it has to be auditable, not merely correct on average.
+        $stmt = $idPdo->prepare(
+            'SELECT reason FROM person_merges WHERE tenant_id = ? AND survivor_id = ?'
+        );
+        $stmt->execute([$idA, $after[2001]['person']]);
+        $reasons = $stmt->fetchAll(PDO::FETCH_COLUMN);
+        assertTrue($reasons !== [], 'the merge was not logged');
+
+        return 'merged and logged on ' . implode(',', $reasons);
+    });
+
+    check('unidentifiable order still counts', function () use ($idA, $idOrder, $idRun, $idRows) {
+        // Some orders arrive with neither email nor phone. The purchase still
+        // happened, so it is somebody's first order. Leaving the sequence NULL
+        // would drop it from every first-purchase count with nothing to notice.
+        $idOrder($idA, 2004, '2026-04-05 10:00:00', null, null, null);
+        $idRun($idA);
+
+        $r = $idRows($idA);
+        assertTrue($r[2004]['seq'] === 1, 'keyless order has sequence ' . var_export($r[2004]['seq'], true));
+
+        return 'own person, sequence 1';
+    });
+
+    check('cancelled order takes no position', function () use ($idA, $idOrder, $idRun, $idRows) {
+        // A cancelled order is not a purchase. If it held a position, the next
+        // real order would be reported one step further along than it was.
+        $idOrder($idA, 2005, '2026-05-05 10:00:00', null, 'raj@example.com', null, '2026-05-06 10:00:00');
+        $idOrder($idA, 2006, '2026-06-05 10:00:00', null, 'raj@example.com', null);
+        $idRun($idA);
+
+        $r = $idRows($idA);
+        assertTrue($r[2005]['seq'] === null, 'the cancelled order kept a sequence');
+        assertTrue($r[2006]['seq'] === 4, 'next order got sequence ' . var_export($r[2006]['seq'], true));
+
+        return 'cancelled skipped, next order seq 4';
+    });
+
+    $idB = $idTenant($idShops[1]);
+
+    check('identity does not cross tenants', function () use ($idA, $idB, $idOrder, $idRun, $idRows, $idPdo) {
+        // Two stores, one shopper, the same phone and email. They must stay
+        // separate people: the salt is per-tenant, so the hashes differ and one
+        // merchant's customer list cannot be reconstructed from another's. This
+        // is what keeps a shared identity layer from becoming a cross-merchant
+        // data leak.
+        $idOrder($idB, 1001, '2026-01-10 10:00:00', null, 'priya@example.com', '9876543210');
+        $idRun($idB);
+
+        $a = $idRows($idA);
+        $b = $idRows($idB);
+        assertTrue($a[1001]['person'] !== $b[1001]['person'], 'one shopper shared a person across two stores');
+
+        $stmt = $idPdo->prepare(
+            'SELECT COUNT(*) FROM identity_keys k1
+               JOIN identity_keys k2
+                 ON k1.key_hash = k2.key_hash AND k1.key_type = k2.key_type
+              WHERE k1.tenant_id = ? AND k2.tenant_id = ?'
+        );
+        $stmt->execute([$idA, $idB]);
+        assertTrue((int) $stmt->fetchColumn() === 0, 'identity key hashes collide across tenants');
+
+        return 'separate people, no shared hashes';
+    });
+
+    $idClean();
+}
+
+// -----------------------------------------------------------------
 echo "\nStorage headroom\n";
 
 check('shard size measured', function () {

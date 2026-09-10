@@ -231,8 +231,15 @@ function checkImportFailures(): array
  */
 function checkJobFreshness(): array
 {
+    // Hours without a success before the job counts as stalled. Each is a few
+    // multiples of its cron interval, so an ordinary skipped run stays quiet.
     $expected = [
-        'import' => 2,    // hours before we consider it stalled
+        'import'   => 2,     // every 5 minutes
+        'sync'     => 3,     // hourly
+        'identity' => 3,     // hourly
+        'purge'    => 48,    // daily; a missed purge means data kept past its
+                             // retention period, which is a compliance problem
+                             // rather than a stale dashboard
     ];
 
     $out = [];

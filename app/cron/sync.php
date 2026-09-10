@@ -139,6 +139,8 @@ function syncOrders(ShopifyApi $api, int $tenantId, callable $log): int
             totalRefundedSet        { shopMoney { amount } }
             discountCodes
             landingPageUrl referrerUrl sourceName
+            email
+            phone
             customer { id }
             customerJourneySummary {
               ready
@@ -227,19 +229,35 @@ function upsertOrder(int $tenantId, array $o): void
     $customerId = ShopifyApi::gidToId($o['customer']['id'] ?? null);
     $journey    = $o['customerJourneySummary'] ?? [];
 
+    // Contact details are hashed HERE, on arrival, and the plaintext is never
+    // written anywhere. Deterministic so two orders from the same person
+    // match; irreversible so a database dump yields no contact details.
+    //
+    // These live on the order rather than only on the customer record because
+    // guest checkout produces orders with no customer at all — and in Indian
+    // D2C that is the common case, not the exception. Resolving identity from
+    // customer_id alone would undercount repeat buyers badly.
+    $emailNorm = Hash::normaliseEmail($o['email'] ?? null);
+    $phoneNorm = Hash::normalisePhone($o['phone'] ?? null);
+
+    $emailHash = $emailNorm !== null ? Hash::pii($tenantId, $emailNorm) : null;
+    $phoneHash = $phoneNorm !== null ? Hash::pii($tenantId, $phoneNorm) : null;
+
     $pdo = Db::core();
 
     $pdo->prepare(
         'INSERT INTO orders
-            (tenant_id, order_id, order_number, shopify_customer_id, created_at, processed_at,
+            (tenant_id, order_id, order_number, shopify_customer_id, email_hash, phone_hash, created_at, processed_at,
              cancelled_at, financial_status, fulfillment_status, currency,
              subtotal_minor, total_minor, discount_minor, refunded_minor, discount_codes,
              landing_site, referring_site, source_name,
              journey_ready, days_to_conversion, moments_count, synced_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,UTC_TIMESTAMP())
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,UTC_TIMESTAMP())
          ON DUPLICATE KEY UPDATE
             order_number       = VALUES(order_number),
             shopify_customer_id= VALUES(shopify_customer_id),
+            email_hash         = COALESCE(VALUES(email_hash), email_hash),
+            phone_hash         = COALESCE(VALUES(phone_hash), phone_hash),
             processed_at       = VALUES(processed_at),
             cancelled_at       = VALUES(cancelled_at),
             financial_status   = VALUES(financial_status),
@@ -258,6 +276,8 @@ function upsertOrder(int $tenantId, array $o): void
         $orderId,
         $o['name'] ?? null,
         $customerId,
+        $emailHash,
+        $phoneHash,
         isoToSql($o['createdAt'] ?? null) ?? gmdate('Y-m-d H:i:s'),
         isoToSql($o['processedAt'] ?? null),
         isoToSql($o['cancelledAt'] ?? null),
