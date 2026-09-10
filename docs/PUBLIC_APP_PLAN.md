@@ -84,12 +84,93 @@ arrived.
 | Scopes `write_pixels`, `read_customer_events` | Required to create a web pixel | No |
 | Web pixel extension | The one-click pixel | Only if you accept manual pasting |
 | `webPixelCreate` on install | Activates it per store | With the above |
+| **Expiring token handling + refresh** | Mandatory for public apps — see §3.2 | **No** |
 | `app/uninstalled` webhook | Stop syncing, mark tenant dead | No |
 | `customers/data_request`, `customers/redact`, `shop/redact` | Mandatory for App Store | No |
 | Merchant session from admin-link HMAC | Non-embedded apps get `shop`+`hmac` on the app URL | No |
 | Shopify Billing API | Cannot charge outside it | Only if free |
 | Privacy policy page | Listing requirement | No |
 | **Merchant-facing dashboard** | The actual product | No — see §6 |
+
+### 3.1 The install flow, concretely
+
+Checked against Shopify's documentation rather than assumed. Two things are
+simpler than the first draft of this plan supposed, and one is harder.
+
+**Simpler: Shopify managed installation.** Scopes are declared in
+`shopify.app.toml` and Shopify requests them itself when the merchant
+installs. We do not build an authorize URL, and `ShopifyOAuth::beginInstall()`
+— which existed to construct one — is no longer needed. Managed installation
+is the default; the legacy flow requires opting in with
+`use_legacy_install_flow = true`, and is discouraged precisely because it lets
+an app end up with different scopes on different stores.
+
+**Simpler: compliance webhooks are declared, not registered.** They go in the
+TOML under `compliance_topics` and Shopify wires them up on deploy:
+
+```toml
+[[webhooks.subscriptions]]
+uri = "/webhooks/compliance.php"
+compliance_topics = [ "customers/redact", "customers/data_request", "shop/redact" ]
+```
+
+So the work is writing the handler, not the registration.
+
+**Merchant does nothing beyond clicking Install:**
+
+```
+Install button
+  → Shopify grants the TOML scopes           (managed installation)
+  → redirect to application_url
+  → we exchange the code for an access token (authorization code grant)
+  → webPixelCreate                            (pixel live, no theme editing)
+  → done — data starts flowing
+```
+
+Note that the **web pixel needs no theme embed at all.** A theme app extension
+is only required for the Liquid identity layer — reading `customer.id` while a
+known customer browses — and that one does need the merchant to toggle an app
+embed in the theme editor. The funnel is complete without it.
+
+**Non-embedded apps use the authorization code grant**, which is what is
+already built and tested. Token exchange is the embedded-app path: it needs an
+App Bridge session token, and there is no App Bridge here.
+
+> **To verify in P1:** exactly which query parameters Shopify sends when a
+> merchant opens a *non-embedded* app from the admin. `shop`, `hmac` and
+> `timestamp` are expected, and `ShopifyOAuth::verifyHmac()` already handles
+> that signature scheme — but merchant login depends on it, so it gets
+> confirmed empirically against a development store rather than assumed.
+
+### 3.2 Expiring access tokens — the one that is harder
+
+**New public apps cannot use non-expiring offline access tokens for the
+GraphQL Admin API.** Existing public apps lose them on 1 January 2027. Custom
+apps are unaffected, which is why this never came up until now.
+
+The token request must include `expiring=1`, and Shopify returns:
+
+| Field | Meaning |
+|---|---|
+| `access_token` | Valid ~60 minutes |
+| `refresh_token` | Used to get a new access token |
+| `expires_in` | Seconds until the access token dies |
+| `refresh_token_expires_in` | 90 days |
+
+This is real new machinery, and it touches things already built:
+
+- **Schema.** `tenants` currently stores one encrypted token and nothing else.
+  It needs the refresh token (also encrypted) and both expiry timestamps.
+- **`ShopifyApi`.** It assumes a token that always works. It needs to refresh
+  on expiry, and to treat a 401 as "refresh and retry once" rather than "the
+  app was uninstalled".
+- **`sync.php`.** An hourly job comfortably refreshes inside the 90-day
+  refresh window. A store whose sync has been broken for 90 days needs
+  reinstalling, and should be surfaced as an alert rather than discovered.
+
+None of this is difficult, but it is not optional and it is easy to discover
+late — the failure mode is every API call breaking exactly one hour after a
+successful install.
 
 ### On the toolchain
 
@@ -192,18 +273,22 @@ of work and the one that determines whether the listing succeeds.
 Ordered so that everything reviewable is built before review is requested, and
 so nothing blocks on a Shopify decision that could have been requested sooner.
 
-### P0 — Keep the deferred decisions cheap *(small)*
-- Formalise the events-storage seam; add a test that fails if events are
-  queried outside `Shard`
-- Add `plan`, `trial_ends_at`, `billing_status` to `tenants` so billing is not
-  a migration under pressure
-- Add a retention-policy config value with no enforcement yet
+### P0 — Schema and scaffolding *(small)*
+- Migration 005: expiring-token columns on `tenants` (`refresh_token_enc`,
+  `token_expires_at`, `refresh_expires_at`) plus `plan`, `trial_ends_at`,
+  `billing_status` so billing is not a migration under pressure
+- Retention-policy config value, no enforcement yet
+- A test that fails if events are queried outside `Shard`, keeping the
+  storage decision (§4) cheap to defer
+- Strip the CLI scaffold to `shopify.app.toml` + `extensions/` — see §10
 
 ### P1 — Public install flow *(no review needed; testable on a dev store)*
-- `/install?shop=…` and the inverted OAuth entry
-- New scopes
+- `shopify.app.toml`: scopes, `embedded = false`, `application_url`,
+  webhook and compliance-topic declarations
+- Install entry point and the authorization code grant with `expiring=1`
+- Token refresh in `ShopifyApi`, and 401 handled as refresh-and-retry
 - `app/uninstalled`
-- Merchant session from the admin-link HMAC
+- Merchant session from the admin-link HMAC — confirm the parameters first
 - Merchant dashboard shell, store-scoped
 
 ### P2 — One-click pixel
@@ -261,3 +346,55 @@ path.
 - Retention policy after uninstall — §5, answer before review submission
 - App name
 - Pricing
+
+---
+
+## 10. The Shopify CLI project
+
+`shopify app init` produces the React Router + Prisma template: a complete
+Node application, embedded, with its own database. **We keep none of it.**
+
+That is not a criticism of the template — it is a good starting point for
+someone building a Node app. It is simply the wrong shape here. It is
+embedded, we are not; it is Node, our server runs PHP with no build step; it
+brings Prisma, we already have a schema and a migration runner.
+
+**The CLI is a deployment tool, not a runtime.** Nothing requires an app to
+run Shopify's template, or any Node at all in production. The project reduces
+to two things:
+
+```
+shopify/
+├── shopify.app.toml     app config: scopes, URLs, webhooks, compliance topics
+└── extensions/
+    └── web-pixel/       the pixel, deployed with `shopify app deploy`
+```
+
+No `web/`, no `shopify.web.toml`, no Prisma, no React Router. Node lives on a
+developer's laptop to run `shopify app deploy` and nowhere else.
+
+### Why it lives in this repository
+
+The extension's event mapping and `import.php`'s expectations are two halves
+of one contract: if the extension starts sending a field the importer does not
+read, or renames one it does, data is silently lost. Keeping them in one
+repository means a single commit changes both. Separate repositories are how
+those two halves drift.
+
+`node_modules/` is gitignored, and the root `.htaccess` already denies the
+directory, so nothing about it reaches the web server.
+
+### Configuration
+
+Notable values, against the scaffold's defaults:
+
+| Setting | Scaffold | Ours |
+|---|---|---|
+| `embedded` | `true` | **`false`** |
+| `application_url` | `https://example.com` | `https://retention.digifyce.com` |
+| `scopes` | `write_products,write_metaobjects,…` | the eight we need, plus `write_pixels` and `read_customer_events` |
+| Metafield / metaobject blocks | present | removed — template demo material |
+| `[build] automatically_update_urls_on_dev` | `true` | **`false`** — it would rewrite the production URL during local development |
+
+That last one matters more than it looks: left on, running `shopify app dev`
+points the live app at a developer's tunnel.
