@@ -33,6 +33,7 @@ require_once __DIR__ . '/Purge.php';
 require_once __DIR__ . '/Identity.php';
 require_once __DIR__ . '/Channel.php';
 require_once __DIR__ . '/Attribution.php';
+require_once __DIR__ . '/Rollup.php';
 require_once __DIR__ . '/ShopifyOAuth.php';
 require_once __DIR__ . '/ShopifyApi.php';
 require_once __DIR__ . '/Dim.php';

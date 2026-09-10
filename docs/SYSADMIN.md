@@ -9,7 +9,7 @@ in hPanel; no shell access is required.
 
 ## 1. Scheduled jobs
 
-Six cron entries. Without them the site still accepts data but nothing is
+Seven cron entries. Without them the site still accepts data but nothing is
 ever processed — events pile up in a spool directory and the dashboard stays
 empty.
 
@@ -33,23 +33,31 @@ sends you:
 /usr/bin/php -v
 ```
 
-### The six jobs
+### The seven jobs
 
-Replace `<account>` and `<site>` with the real values. All six take an
+Replace `<account>` and `<site>` with the real values. All seven take an
 absolute path — cron does not run from the site directory.
 
-The hourly three run in order — sync, then identity, then attribution — because
-each uses what the one before it worked out. Twenty minutes apart is generous
-for the volumes involved; if one overruns, the next simply picks up the
-remainder on its following run.
+Four of them form an hourly chain that must run in this order:
+
+```
+sync  ->  identity  ->  attribute  ->  rollup
+:00        :15           :30            :45
+```
+
+Each uses what the one before it worked out — attribution needs to know who a
+buyer is, and the rollups need to know which campaign got the credit. Fifteen
+minutes apart is generous for the volumes involved, and each job takes a lock,
+so an overrunning job is never run twice; the next hour picks up the remainder.
 
 | Schedule | Command | Purpose |
 |---|---|---|
 | `*/5 * * * *` | `/usr/bin/php /home/<account>/domains/<site>/public_html/app/cron/import.php` | Move captured events into the database |
 | `0 * * * *` | `/usr/bin/php /home/<account>/domains/<site>/public_html/app/cron/sync.php` | Pull orders and customers from Shopify |
-| `20 * * * *` | `/usr/bin/php /home/<account>/domains/<site>/public_html/app/cron/identity.php` | Work out which orders belong to the same person |
-| `40 * * * *` | `/usr/bin/php /home/<account>/domains/<site>/public_html/app/cron/attribute.php` | Work out which campaign each order came from |
-| `15 * * * *` | `/usr/bin/php /home/<account>/domains/<site>/public_html/app/cron/health_check.php --quiet` | Watch for silent failures and email alerts |
+| `15 * * * *` | `/usr/bin/php /home/<account>/domains/<site>/public_html/app/cron/identity.php` | Work out which orders belong to the same person |
+| `30 * * * *` | `/usr/bin/php /home/<account>/domains/<site>/public_html/app/cron/attribute.php` | Work out which campaign each order came from |
+| `45 * * * *` | `/usr/bin/php /home/<account>/domains/<site>/public_html/app/cron/rollup.php` | Aggregate everything into the tables the dashboard reads |
+| `5 * * * *` | `/usr/bin/php /home/<account>/domains/<site>/public_html/app/cron/health_check.php --quiet` | Watch for silent failures and email alerts |
 | `30 3 * * *` | `/usr/bin/php /home/<account>/domains/<site>/public_html/app/cron/purge.php` | Delete data for stores that uninstalled, once their retention period has passed |
 
 **If your plan's minimum interval is 15 minutes**, change the first to
@@ -82,6 +90,16 @@ sorts every order into a channel (Instagram, Email, Paid Search…). Runs after
 laptop purchase once both browsers are known to belong to the same person.
 If it stops, the Campaigns tab freezes while revenue keeps arriving, so the
 numbers look plausible and are wrong — which is worse than an empty tab.
+
+**`rollup.php`** — aggregates events and orders into the tables the dashboard
+reads. Nothing in the UI queries raw events, so if this stops, the dashboard
+freezes while data keeps arriving: it looks like a quiet week rather than a
+fault. Days inside a three-day window are recomputed on every run, because late
+events and refunds keep arriving; older days are written once and left alone.
+
+On a store with history the first run has a lot of days to get through, so it
+does ten at a time and continues on the next run. That is deliberate — a single
+run that tried to do a year would hit the host's time limit and finish nothing.
 
 **`purge.php`** — deletes data for stores that uninstalled, once the retention
 period configured in `.env` has passed. Shopify's `shop/redact` webhook covers

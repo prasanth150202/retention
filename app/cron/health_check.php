@@ -238,6 +238,7 @@ function checkJobFreshness(): array
         'sync'      => 3,    // hourly
         'identity'  => 3,    // hourly
         'attribute' => 3,    // hourly
+        'rollup'    => 3,    // hourly
         'purge'     => 48,   // daily; a missed purge means data kept past its
                              // retention period, which is a compliance problem
                              // rather than a stale dashboard

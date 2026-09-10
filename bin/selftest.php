@@ -1102,6 +1102,421 @@ if ($envFile !== null) {
 }
 
 // -----------------------------------------------------------------
+// Static checks
+echo "\nStatic checks\n";
+
+check('no SQL binds a placeholder twice', function () {
+    // PDO here runs with ATTR_EMULATE_PREPARES = false, and native prepares
+    // cannot bind the same named placeholder more than once — the statement
+    // dies with "Invalid parameter number" the first time it is executed.
+    //
+    // That makes it a runtime failure on a code path a developer may not hit
+    // for weeks: a rollup for a date range, an unusual tenant, a rarely taken
+    // branch. Cheaper to find by reading every SQL literal in the tree.
+    $root  = dirname(__DIR__);
+    $bad   = [];
+    $files = 0;
+
+    foreach (['app', 'bin', 'public_html'] as $dir) {
+        if (!is_dir("{$root}/{$dir}")) {
+            continue;
+        }
+
+        $walk = new RecursiveIteratorIterator(new RecursiveDirectoryIterator("{$root}/{$dir}"));
+
+        foreach ($walk as $file) {
+            if ($file->getExtension() !== 'php') {
+                continue;
+            }
+            $files++;
+
+            foreach (token_get_all((string) file_get_contents($file->getPathname())) as $token) {
+                if (!is_array($token)) {
+                    continue;
+                }
+                if (!in_array($token[0], [T_CONSTANT_ENCAPSED_STRING, T_ENCAPSED_AND_WHITESPACE], true)) {
+                    continue;
+                }
+
+                $text = $token[1];
+
+                // Has to look like a statement, not merely contain the word.
+                // CSS in a view carries :root and :hover and would otherwise
+                // report as an offender forever.
+                $isSql = preg_match('/\bSELECT\b[\s\S]*\bFROM\b/i', $text)
+                    || preg_match('/\bINSERT\s+INTO\b/i', $text)
+                    || preg_match('/\bUPDATE\b[\s\S]*\bSET\b/i', $text)
+                    || preg_match('/\bDELETE\s+FROM\b/i', $text);
+
+                if (!$isSql) {
+                    continue;
+                }
+
+                preg_match_all('/:([a-z_][a-z0-9_]*)/i', $text, $m);
+
+                foreach (array_count_values($m[1] ?? []) as $name => $n) {
+                    if ($n > 1) {
+                        $bad[] = basename((string) $file->getPathname()) . ':' . $token[2] . " (:{$name} x{$n})";
+                    }
+                }
+            }
+        }
+    }
+
+    assertTrue($bad === [], 'repeated placeholders: ' . implode(', ', $bad));
+
+    return "{$files} files scanned";
+});
+
+// -----------------------------------------------------------------
+// Rollups
+//
+// The dashboard reads nothing else, so an error here is an error on
+// every panel at once. Plants a coherent day of traffic and orders for
+// a store in Asia/Kolkata, rolls it up, and checks the totals against
+// what a person counting by hand would say. Local runs only.
+echo "\nRollups\n";
+
+if ($envFile !== null) {
+    foreach ([
+        'the day boundary is the store\'s, not UTC',
+        'sessions split on an idle gap',
+        'orders, revenue, new and repeat',
+        'funnel counts reached and strict separately',
+        'product views, sales and abandons',
+        'nobody advances from a stage they never entered',
+        'drop-off is counted at the stage it happened',
+        'repeat cohorts land in the right bucket',
+        'recomputing a day changes nothing',
+        'days close after the reclose window',
+    ] as $label) {
+        skip($label, 'writes test events; local runs only');
+    }
+} else {
+    $ruShop = 'selftest-rollup.myshopify.com';
+    $ruPdo  = Db::core();
+    $ruPdo->prepare('DELETE FROM tenants WHERE shop_domain = ?')->execute([$ruShop]);
+
+    $ruT = Tenant::upsert($ruShop, [
+        'access_token'             => 'selftest',
+        'refresh_token'            => 'selftest',
+        'expires_in'               => 3600,
+        'refresh_token_expires_in' => 7776000,
+    ], 'read_orders');
+
+    // An Indian store, because that is where the UTC day boundary bites.
+    $ruPdo->prepare('UPDATE tenants SET iana_timezone = ? WHERE tenant_id = ?')
+        ->execute(['Asia/Kolkata', $ruT]);
+    Tenant::forgetCache();
+
+    $ruIst = new DateTimeZone('Asia/Kolkata');
+    $ruUtc = new DateTimeZone('UTC');
+
+    // Five days back, so the day is outside the reclose window and closed.
+    $ruDay = (new DateTimeImmutable('now', $ruIst))->modify('-5 days')->format('Y-m-d');
+    $ruPre = (new DateTimeImmutable($ruDay, $ruIst))->modify('-1 day')->format('Y-m-d');
+
+    $ruShard = Shard::connectionForDate($ruDay);
+    $ruShard->prepare('DELETE FROM events WHERE tenant_id = ?')->execute([$ruT]);
+
+    /** Store-local wall clock -> the UTC value actually stored. */
+    $ruAt = static function (string $local) use ($ruIst, $ruUtc): string {
+        return (new DateTimeImmutable($local, $ruIst))->setTimezone($ruUtc)->format('Y-m-d H:i:s');
+    };
+
+    $ruUid = 1;
+    $ruEv  = static function (int $visitor, string $local, int $type, array $x = [])
+        use ($ruShard, $ruT, &$ruUid, $ruAt): void {
+        $ruShard->prepare(
+            'INSERT INTO events (tenant_id, event_uid, occurred_at, received_at, event_type,
+                                 source, visitor_key, path_id, campaign_id, product_id, geo_id, ua_id)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?)'
+        )->execute([
+            $ruT, $ruUid++, $ruAt($local), $ruAt($local), $type, EventType::SOURCE_PIXEL, $visitor,
+            $x['path'] ?? null, $x['campaign'] ?? null, $x['product'] ?? null,
+            $x['geo'] ?? null, $x['ua'] ?? null,
+        ]);
+    };
+
+    $ruV1 = Dim::visitor($ruT, 'ru-complete');
+    $ruV2 = Dim::visitor($ruT, 'ru-abandoner');
+    $ruV3 = Dim::visitor($ruT, 'ru-midnight');
+    $ruV4 = Dim::visitor($ruT, 'ru-two-visits');
+
+    $ruInsta = Dim::campaign($ruT, 'https://s.test/?utm_source=instagram&utm_campaign=reels');
+    $ruGoog  = Dim::campaign($ruT, 'https://s.test/?utm_source=google&utm_medium=cpc');
+    $ruHome  = Dim::path($ruT, 'https://s.test/');
+    $ruGeo   = Dim::geo(['country' => 'IN', 'region' => 'Maharashtra', 'city' => 'Mumbai']);
+    $ruMob   = Dim::userAgent($ruT, 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile/15E148 Safari/604.1');
+    $ruDesk  = Dim::userAgent($ruT, 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36');
+
+    $ruProd = 100;
+
+    // The complete path, on an Instagram click.
+    $c = ['campaign' => $ruInsta, 'path' => $ruHome, 'geo' => $ruGeo, 'ua' => $ruMob];
+    $ruEv($ruV1, "{$ruDay} 10:00:00", EventType::PAGE_VIEWED, $c);
+    $ruEv($ruV1, "{$ruDay} 10:05:00", EventType::PRODUCT_VIEWED, $c + ['product' => $ruProd]);
+    $ruEv($ruV1, "{$ruDay} 10:10:00", EventType::PRODUCT_ADDED_TO_CART, $c + ['product' => $ruProd]);
+    $ruEv($ruV1, "{$ruDay} 10:15:00", EventType::CHECKOUT_STARTED, $c);
+    // Skips contact, address and shipping — a returning buyer with details
+    // saved. This is what breaks a naive stage-to-stage funnel.
+    $ruEv($ruV1, "{$ruDay} 10:20:00", EventType::PAYMENT_INFO_SUBMITTED, $c);
+    $ruEv($ruV1, "{$ruDay} 10:25:00", EventType::CHECKOUT_COMPLETED, $c);
+
+    // Straight onto a product page from a Google ad, then gone at contact info.
+    $d = ['campaign' => $ruGoog, 'geo' => $ruGeo, 'ua' => $ruDesk];
+    $ruEv($ruV2, "{$ruDay} 11:00:00", EventType::PRODUCT_VIEWED, $d + ['product' => $ruProd]);
+    $ruEv($ruV2, "{$ruDay} 11:05:00", EventType::PRODUCT_ADDED_TO_CART, $d + ['product' => $ruProd]);
+    $ruEv($ruV2, "{$ruDay} 11:10:00", EventType::CHECKOUT_STARTED, $d);
+    $ruEv($ruV2, "{$ruDay} 11:12:00", EventType::CHECKOUT_CONTACT_INFO, $d);
+
+    // 00:30 local is the PREVIOUS day in UTC.
+    $ruEv($ruV3, "{$ruDay} 00:30:00", EventType::PAGE_VIEWED, ['path' => $ruHome, 'geo' => $ruGeo, 'ua' => $ruMob]);
+
+    // Three hours apart: one visitor, two sessions.
+    $ruEv($ruV4, "{$ruDay} 14:00:00", EventType::PAGE_VIEWED, ['path' => $ruHome, 'ua' => $ruMob]);
+    $ruEv($ruV4, "{$ruDay} 17:00:00", EventType::PAGE_VIEWED, ['path' => $ruHome, 'ua' => $ruMob]);
+
+    // 23:30 the previous local evening — must stay out of this day.
+    $ruEv($ruV3, "{$ruPre} 23:30:00", EventType::PAGE_VIEWED, ['path' => $ruHome]);
+
+    $ruPerson = static function () use ($ruPdo, $ruT, $ruDay): int {
+        $ruPdo->prepare('INSERT INTO persons (tenant_id, first_seen, last_seen) VALUES (?,?,?)')
+            ->execute([$ruT, $ruDay, $ruDay]);
+
+        return (int) $ruPdo->lastInsertId();
+    };
+    $ruP1 = $ruPerson();
+    $ruP2 = $ruPerson();
+
+    $ruOrder = static function (int $id, string $local, int $person, int $seq, ?int $visitor, int $minor)
+        use ($ruPdo, $ruT, $ruAt): void {
+        $ruPdo->prepare(
+            "INSERT INTO orders (tenant_id, order_id, person_id, visitor_key, order_sequence,
+                                 created_at, currency, total_minor, synced_at)
+             VALUES (?, ?, ?, ?, ?, ?, 'INR', ?, UTC_TIMESTAMP())"
+        )->execute([$ruT, $id, $person, $visitor, $seq, $ruAt($local), $minor]);
+    };
+
+    // P1 bought 40 days ago and again today: a repeat buyer whose gap falls
+    // between the 30- and 60-day cohort buckets.
+    $ruOld = (new DateTimeImmutable($ruDay, $ruIst))->modify('-40 days')->format('Y-m-d');
+    $ruOrder(5000, "{$ruOld} 12:00:00", $ruP1, 1, null, 80000);
+    $ruOrder(5001, "{$ruDay} 10:25:00", $ruP1, 2, $ruV1, 100000);
+    $ruOrder(5002, "{$ruDay} 15:00:00", $ruP2, 1, $ruV4, 50000);
+
+    $ruPdo->prepare(
+        'INSERT INTO order_line_items
+            (tenant_id, order_id, line_id, product_id, quantity, price_minor, discount_minor)
+         VALUES (?,?,?,?,?,?,0)'
+    )->execute([$ruT, 5001, 1, $ruProd, 2, 50000]);
+
+    $ruPdo->prepare(
+        'INSERT INTO abandoned_checkouts
+            (tenant_id, checkout_id, visitor_key, created_at, total_minor, synced_at)
+         VALUES (?,?,?,?,?,UTC_TIMESTAMP())'
+    )->execute([$ruT, 9001, $ruV2, $ruAt("{$ruDay} 11:10:00"), 50000]);
+    $ruPdo->prepare(
+        'INSERT INTO abandoned_checkout_items
+            (tenant_id, checkout_id, line_no, product_id, quantity, price_minor)
+         VALUES (?,?,1,?,1,?)'
+    )->execute([$ruT, 9001, $ruProd, 50000]);
+
+    Attribution::resolveBatch($ruT, Attribution::pending($ruT, 100));
+    Rollup::day($ruT, $ruDay);
+    Rollup::cohorts($ruT);
+
+    /** @return array<string,mixed> */
+    $ruKpi = static function () use ($ruPdo, $ruT, $ruDay): array {
+        $s = $ruPdo->prepare('SELECT * FROM rollup_daily_kpi WHERE tenant_id = ? AND stat_date = ?');
+        $s->execute([$ruT, $ruDay]);
+
+        return $s->fetch() ?: [];
+    };
+
+    /** @return array<int,array<string,mixed>> */
+    $ruRows = static function (string $table, string $key) use ($ruPdo, $ruT, $ruDay): array {
+        $s = $ruPdo->prepare("SELECT * FROM {$table} WHERE tenant_id = ? AND stat_date = ?");
+        $s->execute([$ruT, $ruDay]);
+
+        $out = [];
+        foreach ($s->fetchAll() as $r) {
+            $out[(int) $r[$key]] = $r;
+        }
+
+        return $out;
+    };
+
+    check('the day boundary is the store\'s, not UTC', function () use ($ruKpi) {
+        // 00:30 IST is 19:00 UTC the evening before. Rolling up by UTC date
+        // would drop it into yesterday, and every Indian evening with it —
+        // which the merchant finds instantly by comparing against Shopify
+        // admin, and then trusts nothing else on the page.
+        $k = $ruKpi();
+        assertTrue((int) $k['visitors'] === 4, 'visitors: ' . $k['visitors']);
+        assertTrue((int) $k['pageviews'] === 4, 'pageviews: ' . $k['pageviews'] . ' (23:30 the night before leaked in?)');
+
+        return '00:30 IST in, 23:30 the night before out';
+    });
+
+    check('sessions split on an idle gap', function () use ($ruKpi) {
+        // Four visitors, five sessions: one of them came back after three
+        // hours. Sessions equalling visitors means the gap logic is dead.
+        $k = $ruKpi();
+        assertTrue((int) $k['sessions'] === 5, 'sessions: ' . $k['sessions']);
+
+        return '4 visitors, 5 sessions';
+    });
+
+    check('orders, revenue, new and repeat', function () use ($ruKpi) {
+        $k = $ruKpi();
+        assertTrue((int) $k['orders'] === 2, 'orders: ' . $k['orders']);
+        assertTrue((int) $k['revenue_minor'] === 150000, 'revenue: ' . $k['revenue_minor']);
+        assertTrue((int) $k['units'] === 2, 'units: ' . $k['units']);
+        assertTrue((int) $k['new_customers'] === 1, 'new: ' . $k['new_customers']);
+        assertTrue((int) $k['repeat_customers'] === 1, 'repeat: ' . $k['repeat_customers']);
+
+        return '2 orders, 1 new, 1 repeat';
+    });
+
+    check('funnel counts reached and strict separately', function () use ($ruRows) {
+        // V2 arrives straight on a product page from an ad and never fires a
+        // plain page view. Reporting only the strict path hides a working ad;
+        // reporting only reached shows more add-to-carts than page views and
+        // reads as a broken dashboard. Both numbers, always.
+        $f = $ruRows('rollup_daily_funnel', 'step');
+
+        assertTrue((int) $f[1]['reached_visitors'] === 3, 'step1 reached: ' . $f[1]['reached_visitors']);
+        assertTrue((int) $f[2]['reached_visitors'] === 2, 'step2 reached: ' . $f[2]['reached_visitors']);
+        assertTrue((int) $f[2]['strict_visitors'] === 1, 'step2 strict: ' . $f[2]['strict_visitors']);
+        assertTrue((int) $f[6]['reached_visitors'] === 1, 'step6 reached: ' . $f[6]['reached_visitors']);
+
+        return 'step 2: 2 reached, 1 strict';
+    });
+
+    check('product views, sales and abandons', function () use ($ruRows, $ruProd) {
+        $p = $ruRows('rollup_daily_product', 'product_id')[$ruProd] ?? [];
+
+        assertTrue($p !== [], 'no product row was written');
+        assertTrue((int) $p['views'] === 2, 'views: ' . $p['views']);
+        assertTrue((int) $p['atc'] === 2, 'atc: ' . $p['atc']);
+        assertTrue((int) $p['units'] === 2, 'units: ' . $p['units']);
+        // "Most abandoned product" comes from carts nobody completed, not from
+        // add-to-carts that later converted.
+        assertTrue((int) $p['abandons'] === 1, 'abandons: ' . $p['abandons']);
+
+        return '2 views, 2 sold, 1 abandoned';
+    });
+
+    check('nobody advances from a stage they never entered', function () use ($ruRows) {
+        // V1 goes checkout_started -> payment, skipping contact, address and
+        // shipping. Counting "advanced" as whoever entered the next stage then
+        // reports stage 5 with 0 entered and 1 advanced. Advanced has to mean
+        // "of those who reached this stage, how many went further".
+        foreach ($ruRows('rollup_daily_abandon', 'stage') as $stage => $r) {
+            assertTrue(
+                (int) $r['advanced'] <= (int) $r['entered'],
+                "stage {$stage}: advanced {$r['advanced']} > entered {$r['entered']}"
+            );
+            assertTrue(
+                (int) $r['abandoned'] === (int) $r['entered'] - (int) $r['advanced'],
+                "stage {$stage}: abandoned does not reconcile"
+            );
+        }
+
+        return 'advanced <= entered at every stage';
+    });
+
+    check('drop-off is counted at the stage it happened', function () use ($ruRows) {
+        $a = $ruRows('rollup_daily_abandon', 'stage');
+
+        // Both shoppers started checkout and both went further, so nobody is
+        // lost at stage 2. V2 stops at contact info, and that is where the one
+        // abandonment belongs.
+        assertTrue((int) $a[2]['entered'] === 2, 'stage 2 entered: ' . $a[2]['entered']);
+        assertTrue((int) $a[2]['abandoned'] === 0, 'stage 2 abandoned: ' . $a[2]['abandoned']);
+        assertTrue((int) $a[3]['abandoned'] === 1, 'stage 3 abandoned: ' . $a[3]['abandoned']);
+        // The number that has to reconcile with Shopify admin.
+        assertTrue((int) $a[3]['shopify_records'] === 1, 'shopify_records: ' . $a[3]['shopify_records']);
+
+        return 'lost at contact info, not at checkout start';
+    });
+
+    check('repeat cohorts land in the right bucket', function () use ($ruPdo, $ruT) {
+        // P1's two orders are 40 days apart: not a 30-day repeat, but a
+        // 60-day one. A cohort curve that counts them at 30 days is
+        // flattering, and flattering is the direction nobody checks.
+        $s = $ruPdo->prepare(
+            'SELECT days_bucket, cohort_size, reordered FROM rollup_cohort_repeat
+              WHERE tenant_id = ? ORDER BY days_bucket'
+        );
+        $s->execute([$ruT]);
+
+        $byBucket = [];
+        foreach ($s->fetchAll() as $r) {
+            $byBucket[(int) $r['days_bucket']] = ($byBucket[(int) $r['days_bucket']] ?? 0) + (int) $r['reordered'];
+        }
+
+        assertTrue(($byBucket[30] ?? 0) === 0, '40-day gap counted as a 30-day repeat');
+        assertTrue(($byBucket[60] ?? 0) === 1, '40-day gap missing from the 60-day bucket');
+        assertTrue(($byBucket[180] ?? 0) === 1, '40-day gap missing from the 180-day bucket');
+
+        return '40-day gap: not 30d, yes 60d';
+    });
+
+    // computed_at moves on every run by design; everything else must not.
+    $ruStable = static function (array $rows): string {
+        array_walk_recursive($rows, static function (&$v, $k): void {
+            if ($k === 'computed_at') { $v = null; }
+        });
+
+        return json_encode($rows) ?: '';
+    };
+
+    check('recomputing a day changes nothing', function () use ($ruT, $ruDay, $ruKpi, $ruRows, $ruStable) {
+        // Every day inside the reclose window is recomputed on every run, so a
+        // rollup that accumulates instead of replacing would double its totals
+        // hourly. The device rollup folds many user agents into one row and is
+        // the one that has to clear the day first.
+        $before = [$ruKpi(), $ruRows('rollup_daily_device', 'device_type'), $ruRows('rollup_daily_funnel', 'step')];
+
+        Rollup::day($ruT, $ruDay);
+
+        $after = [$ruKpi(), $ruRows('rollup_daily_device', 'device_type'), $ruRows('rollup_daily_funnel', 'step')];
+
+        foreach (['kpi' => 0, 'device' => 1, 'funnel' => 2] as $name => $i) {
+            assertTrue(
+                $ruStable($before[$i]) === $ruStable($after[$i]),
+                "{$name} changed on recompute"
+            );
+        }
+
+        return 'idempotent';
+    });
+
+    check('days close after the reclose window', function () use ($ruT, $ruKpi, $ruIst) {
+        // A number that keeps moving cannot be reconciled against anything. It
+        // settles after RECLOSE_DAYS and is labelled provisional until then.
+        $k = $ruKpi();
+        assertTrue((int) $k['is_provisional'] === 0, 'a five-day-old day is still provisional');
+
+        $today = (new DateTimeImmutable('now', $ruIst))->format('Y-m-d');
+        Rollup::day($ruT, $today);
+
+        $s = Db::core()->prepare(
+            'SELECT is_provisional FROM rollup_daily_kpi WHERE tenant_id = ? AND stat_date = ?'
+        );
+        $s->execute([$ruT, $today]);
+        assertTrue((int) $s->fetchColumn() === 1, 'today was written as final');
+
+        return 'today provisional, day 5 closed';
+    });
+
+    $ruShard->prepare('DELETE FROM events WHERE tenant_id = ?')->execute([$ruT]);
+    $ruPdo->prepare('DELETE FROM tenants WHERE shop_domain = ?')->execute([$ruShop]);
+}
+
+// -----------------------------------------------------------------
 echo "\nStorage headroom\n";
 
 check('shard size measured', function () {
