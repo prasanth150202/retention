@@ -245,3 +245,41 @@ Technical questions: Ayman Thahir, Digifyce.
 Full technical design, including why the database is split by year and what
 each component does: [`TECHNICAL_PLAN.md`](../TECHNICAL_PLAN.md) in the
 repository.
+
+---
+
+## 8. Billing
+
+Shopify runs the subscription. It takes the trial, the money, the retries on a
+failed payment, and the cancellation when a merchant uninstalls. This app only
+reads that state back, so there is nothing here to reconcile and no payment
+data on this server.
+
+Four settings in `.env`:
+
+| Setting | Meaning |
+|---|---|
+| `BILLING_ENABLED` | **Leave `false` until the App Store listing is live.** With it on, any store without a subscription is locked out of the dashboard — including your own test stores, with no explanation on screen. |
+| `BILLING_TEST` | Creates subscriptions that bill nothing. Needed for development and for Shopify's app review. **Must be `false` in production**, or nobody is ever charged. |
+| `BILLING_PRICE` / `BILLING_CURRENCY` | Must match the App Store listing exactly. A mismatch is a rejection. |
+| `BILLING_TRIAL_DAYS` | Nothing is charged during the trial and uninstalling cancels it. |
+
+**Tracking does not stop when billing lapses.** Only the dashboard is gated.
+Events keep being collected and rolled up, because a gap in a merchant's
+history is permanent and they may subscribe later. Data for stores that
+*uninstall* is a different question, governed by `UNINSTALL_PURGE_DAYS`.
+
+### If a merchant says they have paid but cannot get in
+
+1. The `app_subscriptions/update` webhook is what unlocks the dashboard
+   immediately. If it did not arrive, the hourly `sync.php` re-reads billing
+   state for any store not checked in six hours — so waiting an hour fixes it
+   on its own.
+2. To force it now, run `sync.php` by hand.
+3. The store's billing history is on their Plan page, and in the
+   `billing_events` table: every status change, when it happened, and whether
+   it came from a webhook, a scheduled read, or the app itself.
+
+`billing_events` is not an accounting record. Shopify is the authority on what
+was actually charged. It exists so a question about a charge has something to
+look at.

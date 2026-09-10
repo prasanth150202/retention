@@ -303,21 +303,38 @@ so nothing blocks on a Shopify decision that could have been requested sooner.
 - Retention enforcement
 - Privacy policy page
 
-### P4 — Analytics *(the product)*
-- Identity resolution and `order_sequence`
-- Attribution, four models
-- Rollup jobs and the 3-day reclose
-- The dashboard tabs
+### P4 — Analytics *(the product)* — DONE
+- Identity resolution and `order_sequence` — union-find over customer id,
+  phone and email, so a guest checkout and a later account with the same
+  phone count as one person. Grouping by Shopify's customer records alone
+  reports a repeat rate well below the truth.
+- Attribution, four models — `pixel_first`/`pixel_last` from our own events,
+  `shopify_first`/`shopify_last` from `customerJourneySummary`. Never
+  reconciled: the disagreement between them is the finding.
+- Channel rules applied — the table seeded in 003 had been read by nothing.
+- Rollup jobs and the 3-day reclose — eleven rollup tables, keyed on the
+  merchant's local date rather than UTC.
+- The dashboard tabs — Overview, Funnel, Campaigns, Products, Retention,
+  Checkout, Geography.
 
-### P5 — Billing
-- Shopify Billing, subscription and trial
-- Plan gating
+### P5 — Billing — DONE
+- Shopify Billing, subscription and trial — `app/lib/Billing.php`. Shopify
+  owns the subscription; this reads its state and never decides it.
+- Plan gating — one pure function, `Billing::resolve()`. Tracking continues
+  when billing lapses; only the dashboard is gated.
+- Off by default (`BILLING_ENABLED`), so an unlisted app does not lock out
+  its own test stores.
 
-### P6 — Listing and submission
+### P6 — Listing and submission — IN PROGRESS
+Checklist and open decisions: **`docs/APP_REVIEW.md`**.
 - Screenshots, copy, pricing, support contact
 - `read_all_orders` request **for the new app** — it does not transfer
 - Protected customer data declaration, now reviewed
 - Submit, expect iteration
+
+**Blocked on the Partner Dashboard `client_id` / `client_secret`.** Until
+those exist, `shopify app deploy` cannot register the pixel extension or the
+webhook subscriptions, so nothing can be installed or tested end to end.
 
 ### Start now, in parallel
 The `read_all_orders` request for the new app should be filed as soon as the
