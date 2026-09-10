@@ -4,8 +4,6 @@ Multi-client Shopify retention, funnel and attribution platform for Digifyce.
 
 Full design: **[TECHNICAL_PLAN.md](TECHNICAL_PLAN.md)** — read §3 (constraints) before judging any design decision, because every one of them traces back to a platform limit.
 
-**[docs/PUBLIC_APP_PLAN.md](docs/PUBLIC_APP_PLAN.md)** — the current direction: a public App Store app, superseding parts of the technical plan.
-
 **Current direction: [docs/PUBLIC_APP_PLAN.md](docs/PUBLIC_APP_PLAN.md)** — a public Shopify App Store app, superseding parts of the technical plan above.
 
 Handover docs: **[docs/SYSADMIN.md](docs/SYSADMIN.md)** (cron, backups, yearly database rotation) · **[docs/SHOPIFY_APP_SETUP.md](docs/SHOPIFY_APP_SETUP.md)** (creating the Shopify app and requesting scopes)
