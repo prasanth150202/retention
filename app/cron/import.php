@@ -424,26 +424,9 @@ function sweepProcessed(): void
 /** Regenerate the write_key map c.php reads, so it never queries the database. */
 function refreshTenantCache(): void
 {
-    $map = [];
+    // One implementation, shared with the OAuth callback so a store is in
+    // the map the instant it installs rather than at the next import.
+    Tenant::refreshWriteKeyCache();
 
-    foreach (Db::core()->query(
-        "SELECT tenant_id, write_key, shop_domain, custom_domain
-           FROM tenants WHERE status = 'active'"
-    )->fetchAll() as $r) {
-        $map[(string) $r['write_key']] = [
-            'id'      => (int) $r['tenant_id'],
-            'domains' => array_values(array_filter([
-                strtolower((string) $r['shop_domain']),
-                strtolower((string) ($r['custom_domain'] ?? '')),
-            ])),
-        ];
-    }
-
-    $file = Config::get('paths.storage') . '/tenants.php';
-    $tmp  = $file . '.' . getmypid() . '.tmp';
-
-    if (@file_put_contents($tmp, '<?php return ' . var_export($map, true) . ";\n", LOCK_EX) !== false) {
-        @rename($tmp, $file);
-    }
 }
 

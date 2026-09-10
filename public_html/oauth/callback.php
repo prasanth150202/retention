@@ -115,6 +115,11 @@ if ($scopes['history_limited']) {
       . 'be incomplete until that is approved. Everything else works normally.</p>';
 }
 
+// The write key exists as of now, so put it where the ingest endpoint can see
+// it. Without this the first events from a store installed in the minute after
+// an import run are rejected, and sendBeacon does not retry.
+Tenant::refreshWriteKeyCache();
+
 // Sign the merchant in so they land on their dashboard rather than a login.
 Merchant::startSession($tenantId, $result['shop']);
 

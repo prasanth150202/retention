@@ -1174,6 +1174,74 @@ if ($envFile !== null) {
 }
 
 // -----------------------------------------------------------------
+echo "\nIngest write-key map\n";
+
+check('a new store is in the map immediately', function () {
+    // c.php resolves a write key from a generated file, never a query, to keep
+    // the hot path off the database. On an unknown key it rebuilds — but not
+    // if it rebuilt within the last minute, or anyone posting random keys
+    // would force a query and a file write per request.
+    //
+    // That protection is right, and it left one gap: a store onboarded during
+    // that minute had its first events answered with 403, and the pixel uses
+    // sendBeacon, which cannot retry. The OAuth callback now refreshes the map
+    // as soon as the write key exists. This checks the refresh actually works.
+    $shop = 'selftest-writekey.myshopify.com';
+    $pdo  = Db::core();
+    $pdo->prepare('DELETE FROM tenants WHERE shop_domain = ?')->execute([$shop]);
+
+    $t = Tenant::upsert($shop, [
+        'access_token'             => 'selftest',
+        'refresh_token'            => 'selftest',
+        'expires_in'               => 3600,
+        'refresh_token_expires_in' => 7776000,
+    ], 'read_orders');
+
+    try {
+        $key = (string) (Tenant::find($t)['write_key'] ?? '');
+        assertTrue($key !== '', 'the new store has no write key');
+
+        Tenant::refreshWriteKeyCache();
+
+        $file = Config::get('paths.storage') . '/tenants.php';
+        assertTrue(is_file($file), 'no write-key map was written');
+
+        $map = include $file;
+        assertTrue(is_array($map), 'the map is not an array');
+        assertTrue(isset($map[$key]), 'the new store is missing from the map');
+        assertTrue(
+            (int) $map[$key]['id'] === $t,
+            'the map points at tenant ' . $map[$key]['id'] . ', not ' . $t
+        );
+        // The origin check reads these, so a missing domain means every event
+        // from that storefront is refused.
+        assertTrue(
+            in_array($shop, $map[$key]['domains'] ?? [], true),
+            'the storefront domain is missing from the map'
+        );
+
+        return 'key, tenant id and domain all present';
+    } finally {
+        $pdo->prepare('DELETE FROM tenants WHERE shop_domain = ?')->execute([$shop]);
+        Tenant::refreshWriteKeyCache();
+    }
+});
+
+check('installing refreshes the map', function () {
+    // The call itself, in the one place that matters. A refactor that drops it
+    // reopens the gap silently, because nothing else fails.
+    $callback = (string) @file_get_contents(dirname(__DIR__) . '/public_html/oauth/callback.php');
+
+    assertTrue($callback !== '', 'the OAuth callback is missing');
+    assertTrue(
+        str_contains($callback, 'Tenant::refreshWriteKeyCache()'),
+        'the OAuth callback no longer refreshes the write-key map'
+    );
+
+    return 'callback refreshes on install';
+});
+
+// -----------------------------------------------------------------
 // Static checks
 echo "\nStatic checks\n";
 

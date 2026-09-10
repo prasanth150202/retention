@@ -262,6 +262,48 @@ final class Tenant
         return $id;
     }
 
+    /**
+     * Rewrite the write-key map that the ingest endpoint reads.
+     *
+     * c.php resolves a write key to a tenant from a generated PHP file rather
+     * than a query, to keep the hot path off the database entirely. On a key
+     * it does not recognise it will rebuild — but not if it rebuilt in the
+     * last minute, because otherwise anyone posting random keys would force a
+     * query and a file write per request.
+     *
+     * That leaves one gap worth closing: a store onboarded during that minute
+     * has its first events rejected, and the pixel uses sendBeacon, which
+     * cannot retry. Calling this the moment a store is installed removes the
+     * gap at the only point where a new write key comes into existence.
+     *
+     * Written to a temporary file and renamed, so a concurrent reader sees
+     * either the old map or the new one and never a half-written file.
+     */
+    public static function refreshWriteKeyCache(): void
+    {
+        $map = [];
+
+        foreach (Db::core()->query(
+            "SELECT tenant_id, write_key, shop_domain, custom_domain
+               FROM tenants WHERE status = 'active'"
+        )->fetchAll() as $r) {
+            $map[(string) $r['write_key']] = [
+                'id'      => (int) $r['tenant_id'],
+                'domains' => array_values(array_filter([
+                    strtolower((string) $r['shop_domain']),
+                    strtolower((string) ($r['custom_domain'] ?? '')),
+                ])),
+            ];
+        }
+
+        $file = Config::get('paths.storage') . '/tenants.php';
+        $tmp  = $file . '.' . getmypid() . '.tmp';
+
+        if (@file_put_contents($tmp, '<?php return ' . var_export($map, true) . ";\n", LOCK_EX) !== false) {
+            @rename($tmp, $file);
+        }
+    }
+
     public static function forgetCache(): void
     {
         self::$cache = [];
