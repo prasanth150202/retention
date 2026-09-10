@@ -90,7 +90,7 @@ $page = 'geography';
         <tbody>
           <?php foreach ($geography as $g): ?>
           <tr>
-            <td class="name"><?= Fmt::e((string) $g['name']) ?></td>
+            <td class="name" title="<?= Fmt::e((string) $g['name']) ?>"><?= Fmt::e(Fmt::clip((string) $g['name'], 40)) ?></td>
             <td class="n"><?= Fmt::num((int) $g['visitors']) ?></td>
             <td class="n"><?= Fmt::num((int) $g['orders']) ?></td>
             <td class="n"><?= Fmt::pct($g['conversion'], 2) ?></td>

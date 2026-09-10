@@ -36,10 +36,10 @@ $table = static function (array $rows, string $cur): void {
       <tbody>
         <?php foreach ($rows as $p): ?>
         <tr>
-          <td class="name">
-            <?= Fmt::e((string) $p['name']) ?>
+          <td class="name" title="<?= Fmt::e((string) $p['name']) ?>">
+            <?= Fmt::e(Fmt::clip((string) $p['name'], 46)) ?>
             <?php if (!empty($p['handle'])): ?>
-              <div class="sub2">/<?= Fmt::e((string) $p['handle']) ?></div>
+              <div class="sub2">/<?= Fmt::e(Fmt::clip((string) $p['handle'], 40)) ?></div>
             <?php endif; ?>
           </td>
           <td class="n">

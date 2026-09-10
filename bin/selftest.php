@@ -2131,6 +2131,50 @@ check('Shopify API version is current', function () {
 
     return "{$configured}, stable for another " . number_format($days) . ' days';
 });
+check('money reads the way the merchant writes it', function () {
+    // Three defects lived here, all of them the kind a merchant notices before
+    // a developer does.
+    $cases = [
+        // INR groups the last three digits then in twos. A table showing
+        // ₹123,456 beside a tile reading ₹1.2L is two different systems.
+        ['money', 12345678,    'INR', '₹1,23,457'],
+        ['money', 123456789,   'INR', '₹12,34,568'],
+        ['money', 9999999999,  'INR', '₹10,00,00,000'],
+        ['money', 99,          'INR', '₹0.99'],
+        // Everyone else groups in threes.
+        ['money', 12345678,    'USD', '$123,457'],
+
+        // A unit must roll over when rounding fills it: a hundred lakh is a
+        // crore, and a thousand million is a billion.
+        ['moneyShort', 999999999,   'INR', '₹1Cr'],
+        ['moneyShort', 999995000,   'INR', '₹1Cr'],
+        ['moneyShort', 12345678,    'INR', '₹1.2L'],
+        ['moneyShort', 9999999999,  'INR', '₹10Cr'],
+        ['moneyShort', 99999999,    'USD', '$1M'],
+        ['moneyShort', 99999999999, 'USD', '$1B'],
+        ['moneyShort', 50000000000, 'USD', '$500M'],
+    ];
+
+    foreach ($cases as [$fn, $minor, $currency, $want]) {
+        $got = Fmt::$fn($minor, $currency);
+        assertTrue($got === $want, "{$fn}({$minor}, {$currency}) gave {$got}, expected {$want}");
+    }
+
+    // Unknown is a dash, never a zero — the rule the whole class exists for.
+    assertTrue(Fmt::money(null) === Fmt::NONE, 'null money was not a dash');
+    assertTrue(Fmt::moneyShort(null) === Fmt::NONE, 'null short money was not a dash');
+    assertTrue(Fmt::pct(null) === Fmt::NONE, 'null percentage was not a dash');
+    assertTrue(Fmt::num(null) === Fmt::NONE, 'null number was not a dash');
+
+    // A zero-length bar for a zero value; a floor only above it.
+    assertTrue(Fmt::barWidth(0, 100) === 0.0, 'a zero value drew a bar');
+    assertTrue(Fmt::barWidth(null, 100) === 0.0, 'a null value drew a bar');
+    assertTrue(Fmt::barWidth(5, 0) === 0.0, 'a zero maximum drew a bar');
+    assertTrue(Fmt::barWidth(1, 1000) >= 0.5, 'a small real value collapsed to nothing');
+    assertTrue(Fmt::barWidth(50, 100) === 50.0, 'a half value was not half a bar');
+
+    return count($cases) . ' money cases, nulls, and bar widths';
+});
 check('every connection is strict', function () {
     // Without strict mode MySQL does not reject a value that will not fit — it
     // coerces it silently. An order total above the column maximum is clamped,

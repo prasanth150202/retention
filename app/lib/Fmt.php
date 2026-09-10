@@ -40,7 +40,40 @@ final class Fmt
 
         // Whole rupees on a dashboard: the paise are noise at this scale, and
         // two extra digits on every row makes a table harder to scan.
-        return $symbol . number_format($major, $round && $major >= 100 ? 0 : 2);
+        $decimals = $round && $major >= 100 ? 0 : 2;
+
+        return $symbol . self::group($major, $decimals, strtoupper($currency));
+    }
+
+    /**
+     * Digit grouping, in the convention of the currency.
+     *
+     * INR groups the last three digits and then in twos — 1,23,456 rather than
+     * 123,456. moneyShort() already speaks in lakh and crore for exactly this
+     * reason, and a table of ₹123,456 beside a tile reading ₹1.2L reads as two
+     * different systems. Indian merchants write it the Indian way; matching
+     * that is the difference between a figure being read and being converted.
+     */
+    private static function group(float $value, int $decimals, string $currency): string
+    {
+        if ($currency !== 'INR') {
+            return number_format($value, $decimals);
+        }
+
+        $sign  = $value < 0 ? '-' : '';
+        $fixed = number_format(abs($value), $decimals, '.', '');
+
+        [$whole, $fraction] = array_pad(explode('.', $fixed, 2), 2, null);
+
+        if (strlen($whole) > 3) {
+            $last  = substr($whole, -3);
+            $rest  = substr($whole, 0, -3);
+            // Every two digits from the right, in the leading part only.
+            $rest  = (string) preg_replace('/\B(?=(?:\d{2})+$)/', ',', $rest);
+            $whole = $rest . ',' . $last;
+        }
+
+        return $sign . $whole . ($fraction !== null ? '.' . $fraction : '');
     }
 
     /** Money as a compact figure for a headline tile: ₹1.2L, ₹3.4Cr. */
@@ -55,21 +88,25 @@ final class Fmt
 
         // Indian numbering, because the first stores using this are Indian and
         // a merchant reading "₹12,00,000" as "1.2M" has to stop and convert.
+        //
+        // Each threshold also asks whether the SMALLER unit would round up to a
+        // full one of the larger. Without that, ₹99,99,999.99 prints as "₹100L"
+        // — and a hundred lakh is a crore. The same trap sits between K and M.
         if (strtoupper($currency) === 'INR') {
-            if ($major >= 10000000) {
+            if ($major >= 10000000 || self::roundsTo($major, 100000, 100)) {
                 return $symbol . self::trim($major / 10000000) . 'Cr';
             }
-            if ($major >= 100000) {
+            if ($major >= 100000 || self::roundsTo($major, 1000, 100)) {
                 return $symbol . self::trim($major / 100000) . 'L';
-            }
-            if ($major >= 1000) {
-                return $symbol . number_format($major, 0);
             }
 
             return $symbol . number_format($major, 0);
         }
 
-        if ($major >= 1000000) {
+        if ($major >= 1000000000 || self::roundsTo($major, 1000000, 1000)) {
+            return $symbol . self::trim($major / 1000000000) . 'B';
+        }
+        if ($major >= 1000000 || self::roundsTo($major, 1000, 1000)) {
             return $symbol . self::trim($major / 1000000) . 'M';
         }
         if ($major >= 1000) {
@@ -77,6 +114,15 @@ final class Fmt
         }
 
         return $symbol . number_format($major, 0);
+    }
+
+    /**
+     * Would this value, shown in `$unit`s to one decimal, round up to `$limit`
+     * of them — and so belong in the next unit up instead?
+     */
+    private static function roundsTo(float $value, float $unit, float $limit): bool
+    {
+        return $value >= $unit && round($value / $unit, 1) >= $limit;
     }
 
     /**
@@ -157,6 +203,24 @@ final class Fmt
         } catch (Throwable) {
             return $iso;
         }
+    }
+
+    /**
+     * Shorten a label for a table cell.
+     *
+     * Truncates from the right and marks it, so a long value takes one line
+     * instead of eight. The full text goes in a title attribute at the call
+     * site — nothing is hidden, only folded.
+     */
+    public static function clip(?string $text, int $max = 28): string
+    {
+        $text = trim((string) $text);
+
+        if ($text === '' || mb_strlen($text) <= $max) {
+            return $text;
+        }
+
+        return rtrim(mb_substr($text, 0, $max - 1)) . '…';
     }
 
     /** Shorten a URL path for a table cell without losing which page it is. */

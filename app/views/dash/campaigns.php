@@ -128,7 +128,8 @@ $keep = ['from' => $range['from'], 'to' => $range['to']];
               <?= Fmt::e((string) $c['name']) ?>
               <?php if (!empty($c['utm_content']) || !empty($c['utm_term'])): ?>
                 <div class="sub2"><?= Fmt::e(implode(' · ', array_filter([
-                    $c['utm_content'] ?? null, $c['utm_term'] ?? null,
+                    Fmt::clip($c['utm_content'] ?? null, 30),
+                    Fmt::clip($c['utm_term'] ?? null, 30),
                 ]))) ?></div>
               <?php endif; ?>
             </td>

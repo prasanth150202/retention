@@ -708,10 +708,15 @@ final class Report
             return 'No campaign tag';
         }
 
+        // Each part is clipped rather than the joined string, because the
+        // identifying part is the campaign — which comes last. Truncating the
+        // whole label from the right would leave every row reading
+        // "instagram / social / …" and tell a merchant nothing. UTM values are
+        // allowed 191 characters each and ad platforms generate long ones.
         $bits = array_filter([
-            $r['utm_source']   ?? null,
-            $r['utm_medium']   ?? null,
-            $r['utm_campaign'] ?? null,
+            Fmt::clip($r['utm_source']   ?? null, 22),
+            Fmt::clip($r['utm_medium']   ?? null, 18),
+            Fmt::clip($r['utm_campaign'] ?? null, 34),
         ]);
 
         if ($bits !== []) {
