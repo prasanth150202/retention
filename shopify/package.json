@@ -1,0 +1,16 @@
+{
+  "name": "retention-dashboard-shopify",
+  "private": true,
+  "description": "Shopify app config and web pixel extension. NOT an application - the app is the PHP project in the parent directory. Node exists here only so `shopify app deploy` can run.",
+  "scripts": {
+    "deploy": "shopify app deploy",
+    "link": "shopify app config link",
+    "info": "shopify app info"
+  },
+  "dependencies": {
+    "@shopify/web-pixels-extension": "^2.4.0"
+  },
+  "devDependencies": {
+    "@shopify/cli": "^3.87.0"
+  }
+}

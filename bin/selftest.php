@@ -463,6 +463,105 @@ check('missing read_all_orders detected', function () {
 });
 
 // -----------------------------------------------------------------
+echo "\nPixel / importer contract\n";
+
+/**
+ * The web pixel decides what an event looks like; import.php decides how to
+ * read it. If one renames a field and the other does not, events keep
+ * arriving, keep importing, and quietly lose a column — no error anywhere.
+ *
+ * This compares the two directly. It is the reason the extension lives in
+ * this repository rather than its own.
+ */
+$pixelJs = dirname(__DIR__) . '/shopify/extensions/retention-pixel/src/index.js';
+$importP = dirname(__DIR__) . '/app/cron/import.php';
+
+check('pixel extension present', function () use ($pixelJs) {
+    assertTrue(is_file($pixelJs), 'web pixel source not found at ' . $pixelJs);
+    return 'shopify/extensions/retention-pixel';
+});
+
+check('every field the pixel emits is read by the importer', function () use ($pixelJs, $importP) {
+    $js  = (string) file_get_contents($pixelJs);
+    $php = (string) file_get_contents($importP);
+
+    // Fields are set two ways and BOTH must be collected. An earlier version
+    // only matched `out.x =` and reported "all consumed" having checked nine
+    // of sixteen — a test that passes while missing the mismatch it exists
+    // to catch is worse than no test.
+    $emitted = [];
+
+    // 1. the object literal: const out = { n: …, s: …, id: … }
+    if (preg_match('/const\s+out\s*=\s*\{(.*?)\n\s*\};/s', $js, $lit)) {
+        preg_match_all('/^\s*([a-z]{1,3})\s*:/mi', $lit[1], $keys);
+        $emitted = array_merge($emitted, $keys[1] ?? []);
+    }
+
+    // 2. later assignments: out.x = …
+    preg_match_all('/\bout\.([a-z]{1,3})\s*=/i', $js, $assign);
+    $emitted = array_merge($emitted, $assign[1] ?? []);
+
+    $emitted = array_values(array_unique($emitted));
+
+    assertTrue($emitted !== [], 'no emitted fields found — has the pixel been rewritten?');
+    assertTrue(
+        count($emitted) >= 14,
+        'only ' . count($emitted) . ' fields detected (' . implode(',', $emitted)
+        . ') — the extraction is probably missing a form again, not the pixel shrinking'
+    );
+
+    $unread = [];
+    foreach ($emitted as $f) {
+        // import.php reads them as $e['x'] in mapEvent().
+        if (!preg_match("/\\\$e\\['" . preg_quote($f, '/') . "'\\]/", $php)) {
+            $unread[] = $f;
+        }
+    }
+
+    assertTrue(
+        $unread === [],
+        'the pixel sends fields the importer ignores: ' . implode(', ', $unread)
+        . ' — either read them in mapEvent() or stop sending them, because right '
+        . 'now that data is being collected and discarded.'
+    );
+
+    return count($emitted) . ' fields, all consumed';
+});
+
+check('pixel omits the PII-bearing events', function () use ($pixelJs) {
+    // input_changed and friends carry raw element.value: real emails and phone
+    // numbers as they are typed. Their absence is what stops that data ever
+    // reaching us.
+    $js = (string) file_get_contents($pixelJs);
+    foreach (['input_changed', 'input_blurred', 'input_focused', 'alert_displayed'] as $e) {
+        assertTrue(!str_contains($js, "'{$e}'"), "the pixel subscribes to {$e}, which carries raw PII");
+    }
+    return 'all four absent';
+});
+
+check('pixel captures the order id', function () use ($pixelJs) {
+    // checkout.order.id is the join between behaviour and revenue. Losing it
+    // leaves orders and browsing as two unrelated piles of data.
+    $js = (string) file_get_contents($pixelJs);
+    assertTrue(str_contains($js, 'd.checkout.order'), 'the order id is not captured');
+    assertTrue(str_contains($js, 'checkout_completed'), 'checkout_completed is not subscribed');
+    return 'behaviour joins to revenue';
+});
+
+check('extension declares consent categories honestly', function () {
+    // Shopify gates the pixel on these. Over-declaring collects less for no
+    // reason; under-declaring collects without the consent that applies.
+    $toml = (string) @file_get_contents(
+        dirname(__DIR__) . '/shopify/extensions/retention-pixel/shopify.extension.toml'
+    );
+    assertTrue(str_contains($toml, 'runtime_context = "strict"'), 'runtime_context must be strict');
+    assertTrue(preg_match('/^\s*analytics\s*=\s*true/m', $toml) === 1, 'analytics consent not declared');
+    assertTrue(preg_match('/^\s*marketing\s*=\s*false/m', $toml) === 1,
+        'marketing is declared true, but this app does no ad targeting');
+    return 'analytics only, strict sandbox';
+});
+
+// -----------------------------------------------------------------
 echo "\nWebhook verification\n";
 
 $hookSecret = 'shpss_webhook_test_secret_0123456789';

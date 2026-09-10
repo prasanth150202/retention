@@ -1,0 +1,66 @@
+# =====================================================================
+# retention-dashboard — web pixel extension
+#
+# Activated per store by webPixelCreate during install. The merchant never
+# opens the theme editor, pastes a snippet, or sees a settings screen.
+#
+# Deployed with `shopify app deploy` from the parent directory. Nothing here
+# runs on our server; Shopify hosts and sandboxes it.
+# =====================================================================
+
+type = "web_pixel_extension"
+name = "Retention Dashboard"
+runtime_context = "strict"
+
+
+# ---------------------------------------------------------------------
+# Customer privacy
+#
+# Declares which consent categories this pixel needs. Shopify applies the
+# store's consent decisions to Shopify-managed surfaces, so in regions where
+# consent is required and not given, this pixel simply does not collect.
+#
+# That gating is the single strongest argument for a web pixel over a theme
+# script: theme code runs regardless and the app would have to check consent
+# itself through the Customer Privacy API, under the merchant's controller
+# liability.
+#
+# Declared honestly rather than defensively:
+#   analytics      true  — this is what the app does
+#   marketing      false — no ad targeting, no audience building, no retargeting
+#   preferences    false — nothing is personalised
+#   sale_of_data   disabled — data is never sold or shared for cross-context
+#                  behavioural advertising
+#
+# Over-declaring here would gate the pixel behind consents it does not need,
+# collecting less for no reason. Under-declaring would collect without the
+# consent that actually applies.
+# ---------------------------------------------------------------------
+[customer_privacy]
+analytics = true
+marketing = false
+preferences = false
+sale_of_data = "disabled"
+
+
+# ---------------------------------------------------------------------
+# Settings
+#
+# Validated by Shopify against this schema when webPixelCreate runs, so a
+# mismatch fails the mutation rather than storing something the extension
+# cannot read. That is a good failure — but it means this schema and
+# ShopifyApi::upsertWebPixel() must agree.
+#
+# writeKey identifies which store an event belongs to. It is PUBLIC: it is
+# served to every visitor and readable in the browser. It is not a credential,
+# and the collector protects itself with an origin check, a rate limit and a
+# size cap instead.
+# ---------------------------------------------------------------------
+[settings]
+type = "object"
+
+[settings.fields.writeKey]
+name = "Write key"
+description = "Identifies this store to the analytics collector."
+type = "single_line_text_field"
+validations = [ { name = "min", value = "10" } ]
