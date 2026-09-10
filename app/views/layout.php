@@ -1,10 +1,13 @@
 <?php
 /**
- * Shared page shell.
+ * Shared page shell for both audiences.
  *
- * Deliberately plain. This is the staff console, not the client-facing
- * dashboard — that arrives in M4 and deserves real design attention. What
- * matters here is that data is legible and destructive actions are obvious.
+ * Merchants see their own store; Digifyce staff see every store. The header
+ * differs, the rest does not.
+ *
+ * Deliberately plain for now. The analytics surface arrives in P4 and is what
+ * a merchant judges the product on, so it deserves real design attention then.
+ * What matters here is that data is legible and state is unambiguous.
  *
  * No build step, so styles are inline and there is no framework.
  *
@@ -12,7 +15,10 @@
  * @var callable $content
  */
 
-$user = Auth::user();
+// A merchant session wins: a signed request from Shopify is proof of who is
+// looking, where a lingering staff cookie is only proof somebody once was.
+$merchant = Merchant::check() ? Merchant::tenant() : null;
+$user     = $merchant === null && Auth::check() ? Auth::user() : null;
 $nav  = $nav ?? 'stores';
 ?>
 <!doctype html>
@@ -20,7 +26,7 @@ $nav  = $nav ?? 'stores';
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex,nofollow">
-<title><?= htmlspecialchars($title) ?> — Odysseus</title>
+<title><?= htmlspecialchars($title) ?> — Retention Dashboard</title>
 <style>
   :root {
     color-scheme: light dark;
@@ -106,9 +112,20 @@ $nav  = $nav ?? 'stores';
   .pill.live { color: var(--ok); border-color: var(--ok); }
 </style>
 
-<?php if ($user): ?>
+<?php if ($merchant !== null): ?>
+<!-- A merchant sees their own store and nothing else. No store switcher,
+     because there is nothing to switch to, and no sign-out, because Shopify
+     signs them in on arrival and "sign out" would only strand them. -->
 <header>
-  <span class="brand">Odysseus</span>
+  <span class="brand">Retention Dashboard</span>
+  <nav>
+    <a href="/" class="<?= $nav === 'dashboard' ? 'on' : '' ?>">Overview</a>
+  </nav>
+  <span class="who"><?= htmlspecialchars((string) $merchant['shop_domain']) ?></span>
+</header>
+<?php elseif ($user): ?>
+<header>
+  <span class="brand">Retention Dashboard <span class="pill">staff</span></span>
   <nav>
     <a href="/?p=stores" class="<?= $nav === 'stores' ? 'on' : '' ?>">Stores</a>
   </nav>
