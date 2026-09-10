@@ -21,6 +21,7 @@ require_once $root . '/app/lib/bootstrap.php';
 require_once $root . '/app/lib/Auth.php';
 require_once $root . '/app/lib/Merchant.php';
 require_once $root . '/app/lib/Snippet.php';
+require_once $root . '/app/lib/Fmt.php';
 
 try {
     odysseus_boot();
@@ -136,23 +137,20 @@ switch ($page) {
         });
         break;
 
+    // --- Merchant analytics ------------------------------------------
+    case 'funnel':
+    case 'campaigns':
+    case 'products':
+    case 'retention':
+    case 'checkout':
+    case 'geography':
+        merchantPage($page);
+        break;
+
     // --- Merchant ----------------------------------------------------
     default:
         if (Merchant::check()) {
-            $tenant = Merchant::tenant();
-
-            if (!$tenant || $tenant['status'] === 'uninstalled') {
-                Merchant::logout();
-                header('Location: /?p=no-shop');
-                exit;
-            }
-
-            $stats = storeStats((int) $tenant['tenant_id']);
-
-            render((string) $tenant['display_name'], 'dashboard',
-                static function () use ($tenant, $stats): void {
-                    require dirname(__DIR__) . '/app/views/dashboard.php';
-                });
+            merchantPage('');
             break;
         }
 
@@ -169,6 +167,99 @@ switch ($page) {
 
 
 // =====================================================================
+
+/**
+ * Render one analytics tab for the signed-in merchant.
+ *
+ * Every tab goes through here, so the session check and the store lookup
+ * happen in exactly one place. A tab that forgot them would be a tab showing
+ * one merchant another's revenue.
+ *
+ * Each tab loads only what it displays. The overview does not pay for the
+ * cohort queries and the retention tab does not pay for the daily series.
+ */
+function merchantPage(string $page): void
+{
+    if (!Merchant::check()) {
+        header('Location: /?p=no-shop');
+        exit;
+    }
+
+    $tenant = Merchant::tenant();
+
+    if (!$tenant || $tenant['status'] === 'uninstalled') {
+        Merchant::logout();
+        header('Location: /?p=no-shop');
+        exit;
+    }
+
+    $tenantId = (int) $tenant['tenant_id'];
+    $stats    = storeStats($tenantId);
+    $hasData  = Report::hasData($tenantId);
+    $range    = Report::range($tenantId, $_GET['from'] ?? null, $_GET['to'] ?? null);
+    $view     = $page === '' ? 'overview' : $page;
+    $nav      = $page === '' ? 'dashboard' : $page;
+
+    $titles = [
+        'overview'   => (string) $tenant['display_name'],
+        'funnel'     => 'Funnel',
+        'campaigns'  => 'Campaigns',
+        'products'   => 'Products',
+        'retention'  => 'Retention',
+        'checkout'   => 'Checkout',
+        'geography'  => 'Geography',
+    ];
+
+    $data = [];
+
+    switch ($view) {
+        case 'funnel':
+            $data['funnel'] = Report::funnel($tenantId, $range);
+            break;
+
+        case 'campaigns':
+            $model = (string) ($_GET['model'] ?? Report::DEFAULT_MODEL);
+            $model = in_array($model, Report::MODELS, true) ? $model : Report::DEFAULT_MODEL;
+
+            $data['model']             = $model;
+            $data['campaigns']         = Report::campaigns($tenantId, $range, $model);
+            $data['channels']          = Report::channels($tenantId, $range, $model);
+            $data['comparison']        = Report::modelComparison($tenantId, $range);
+            $data['campaignRetention'] = Report::campaignRetention($tenantId);
+            break;
+
+        case 'products':
+            $data['products'] = Report::products($tenantId, $range);
+            break;
+
+        case 'retention':
+            $data['retention'] = Report::retention($tenantId);
+            break;
+
+        case 'checkout':
+            $data['abandon'] = Report::abandonment($tenantId, $range);
+            break;
+
+        case 'geography':
+            $data['geography'] = Report::geography($tenantId, $range);
+            $data['devices']   = Report::devices($tenantId, $range);
+            $data['landing']   = Report::landingPages($tenantId, $range);
+            break;
+
+        default:
+            $view              = 'overview';
+            $data['summary']   = Report::summary($tenantId, $range);
+            $data['trend']     = Report::trend($tenantId, $range);
+            $data['channels']  = Report::channels($tenantId, $range, Report::DEFAULT_MODEL);
+            break;
+    }
+
+    render($titles[$view] ?? 'Dashboard', $nav,
+        static function () use ($tenant, $stats, $range, $hasData, $data, $view): void {
+            extract($data, EXTR_SKIP);
+            require dirname(__DIR__) . '/app/views/dash/' . $view . '.php';
+        });
+}
 
 function render(string $title, string $nav, callable $content): void
 {

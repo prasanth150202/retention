@@ -1189,6 +1189,8 @@ if ($envFile !== null) {
         'repeat cohorts land in the right bucket',
         'recomputing a day changes nothing',
         'days close after the reclose window',
+        'every dashboard tab renders',
+        'a brand new store is told which it is',
     ] as $label) {
         skip($label, 'writes test events; local runs only');
     }
@@ -1512,6 +1514,123 @@ if ($envFile !== null) {
         return 'today provisional, day 5 closed';
     });
 
+    check('every dashboard tab renders', function () use ($ruT, $ruPdo) {
+        // Views are where undefined-index and null-arithmetic errors live, and
+        // they only surface when the page is actually rendered. Each tab is
+        // rendered twice: against a store with a full day of data, and against
+        // a brand new store with nothing — which is what every merchant sees
+        // in their first hour, and the state most likely to be untested.
+        $blank = 'selftest-blank.myshopify.com';
+        $ruPdo->prepare('DELETE FROM tenants WHERE shop_domain = ?')->execute([$blank]);
+        $emptyT = Tenant::upsert($blank, [
+            'access_token'             => 'selftest',
+            'refresh_token'            => 'selftest',
+            'expires_in'               => 3600,
+            'refresh_token_expires_in' => 7776000,
+        ], 'read_orders');
+
+        $views = ['overview', 'funnel', 'campaigns', 'products', 'retention', 'checkout', 'geography'];
+        $root  = dirname(__DIR__);
+        $bytes = 0;
+
+        // Any notice or warning is a failure here, not a log line.
+        set_error_handler(static function (int $no, string $msg, string $file, int $line): bool {
+            throw new ErrorException($msg . "  [" . basename($file) . ":{$line}]", 0, $no, $file, $line);
+        });
+
+        try {
+            foreach ([$ruT, $emptyT] as $tenantId) {
+                foreach ($views as $view) {
+                    $tenant  = Tenant::find($tenantId);
+                    $stats   = ['events' => 0, 'last_event' => null, 'visitors' => 0,
+                                'spool' => 0, 'orders' => 0, 'revenue_minor' => 0];
+                    $hasData = Report::hasData($tenantId);
+                    $range   = Report::range($tenantId, null, null);
+
+                    $data = match ($view) {
+                        'funnel'    => ['funnel' => Report::funnel($tenantId, $range)],
+                        'campaigns' => [
+                            'model'             => Report::DEFAULT_MODEL,
+                            'campaigns'         => Report::campaigns($tenantId, $range, Report::DEFAULT_MODEL),
+                            'channels'          => Report::channels($tenantId, $range, Report::DEFAULT_MODEL),
+                            'comparison'        => Report::modelComparison($tenantId, $range),
+                            'campaignRetention' => Report::campaignRetention($tenantId),
+                        ],
+                        'products'  => ['products' => Report::products($tenantId, $range)],
+                        'retention' => ['retention' => Report::retention($tenantId)],
+                        'checkout'  => ['abandon' => Report::abandonment($tenantId, $range)],
+                        'geography' => [
+                            'geography' => Report::geography($tenantId, $range),
+                            'devices'   => Report::devices($tenantId, $range),
+                            'landing'   => Report::landingPages($tenantId, $range),
+                        ],
+                        default     => [
+                            'summary'  => Report::summary($tenantId, $range),
+                            'trend'    => Report::trend($tenantId, $range),
+                            'channels' => Report::channels($tenantId, $range, Report::DEFAULT_MODEL),
+                        ],
+                    };
+
+                    extract($data, EXTR_SKIP);
+
+                    ob_start();
+                    try {
+                        require $root . '/app/views/dash/' . $view . '.php';
+                        $html = (string) ob_get_clean();
+                    } catch (Throwable $e) {
+                        ob_end_clean();
+                        throw new RuntimeException("{$view} (tenant {$tenantId}): " . $e->getMessage());
+                    }
+
+                    assertTrue(trim($html) !== '', "{$view} rendered nothing for tenant {$tenantId}");
+                    $bytes += strlen($html);
+                }
+            }
+        } finally {
+            restore_error_handler();
+            $ruPdo->prepare('DELETE FROM tenants WHERE shop_domain = ?')->execute([$blank]);
+        }
+
+        return count($views) . ' tabs x2 states, ' . number_format($bytes) . ' bytes';
+    });
+
+    check('a brand new store is told which it is', function () use ($ruPdo) {
+        // An empty dashboard and a broken one look identical, and a merchant
+        // who cannot tell them apart assumes the worst. The empty state has to
+        // say tracking is live and when numbers will appear.
+        $blank = 'selftest-blank2.myshopify.com';
+        $ruPdo->prepare('DELETE FROM tenants WHERE shop_domain = ?')->execute([$blank]);
+        $t = Tenant::upsert($blank, [
+            'access_token'             => 'selftest',
+            'refresh_token'            => 'selftest',
+            'expires_in'               => 3600,
+            'refresh_token_expires_in' => 7776000,
+        ], 'read_orders');
+
+        $tenant  = Tenant::find($t);
+        $stats   = ['events' => 0, 'last_event' => null, 'visitors' => 0,
+                    'spool' => 0, 'orders' => 0, 'revenue_minor' => 0];
+        $hasData = Report::hasData($t);
+        $range   = Report::range($t, null, null);
+        $summary = Report::summary($t, $range);
+        $trend   = Report::trend($t, $range);
+        $channels = Report::channels($t, $range, Report::DEFAULT_MODEL);
+
+        ob_start();
+        require dirname(__DIR__) . '/app/views/dash/overview.php';
+        $html = (string) ob_get_clean();
+
+        $ruPdo->prepare('DELETE FROM tenants WHERE shop_domain = ?')->execute([$blank]);
+
+        assertTrue(
+            str_contains($html, 'Waiting for the first visitor'),
+            'the empty overview does not explain itself'
+        );
+        // Zeros dressed up as data would be worse than the honest empty state.
+        assertTrue(!str_contains($html, 'Conversion'), 'empty store was shown metric tiles');
+
+        return 'explains itself instead of showing zeros';
+    });
     $ruShard->prepare('DELETE FROM events WHERE tenant_id = ?')->execute([$ruT]);
     $ruPdo->prepare('DELETE FROM tenants WHERE shop_domain = ?')->execute([$ruShop]);
 }
