@@ -297,6 +297,86 @@ check('funnel steps ordered', function () {
 });
 
 // -----------------------------------------------------------------------
+echo "\nEvent storage seam\n";
+
+/**
+ * Where raw events live is a deferred decision — shared-hosting shards today,
+ * possibly a VPS or a columnar store once install counts grow. That deferral
+ * is only cheap while Shard remains the single place that knows which
+ * database an event row belongs to.
+ *
+ * This is a static scan rather than a runtime check, because the failure it
+ * guards against is somebody writing a direct query in a new file, which no
+ * runtime test would ever execute.
+ */
+check('events queried only through Shard', function () {
+    $root  = dirname(__DIR__);
+    $dirs  = ['/app', '/bin', '/public_html'];
+    $bad   = [];
+
+    // Files permitted to name the events table without routing through Shard,
+    // because they ARE the seam or they define it.
+    $allow = ['Shard.php', 'Migrator.php', 'selftest.php'];
+
+    foreach ($dirs as $dir) {
+        $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root . $dir));
+        foreach ($it as $file) {
+            if ($file->getExtension() !== 'php') {
+                continue;
+            }
+            $name = $file->getBasename();
+            if (in_array($name, $allow, true)) {
+                continue;
+            }
+
+            $src = (string) file_get_contents($file->getPathname());
+
+            // Scan only string literals. An earlier version matched raw source
+            // and flagged Dim.php for the phrase "from events" in a comment —
+            // allowlisting the file would have blinded this check to a real
+            // violation there later, so the scan is narrowed instead.
+            $sql = '';
+            foreach (token_get_all($src) as $token) {
+                if (is_array($token) && in_array($token[0], [
+                    T_CONSTANT_ENCAPSED_STRING, T_ENCAPSED_AND_WHITESPACE, T_INLINE_HTML,
+                ], true)) {
+                    $sql .= ' ' . $token[1];
+                }
+            }
+
+            // Does it write SQL against the events table?
+            if (!preg_match('/\b(FROM|INTO|UPDATE|JOIN)\s+`?events`?\b/i', $sql)) {
+                continue;
+            }
+            // If so, it must obtain its connection from Shard.
+            if (!str_contains($src, 'Shard::')) {
+                $bad[] = $name;
+            }
+        }
+    }
+
+    assertTrue(
+        $bad === [],
+        'these query the events table without going through Shard: '
+        . implode(', ', array_unique($bad))
+        . ' — route the connection through Shard::forDate() or '
+        . 'Shard::connectionForDate(), or the storage layer can no longer be '
+        . 'swapped without hunting for stray queries.'
+    );
+
+    return 'no direct queries outside the seam';
+});
+
+check('shard router resolves by date, not by config', function () {
+    // Shard::forDate must consult shard_registry rather than rebuilding the
+    // name from DB_SHARD, otherwise a migrated store silently reads the wrong
+    // database.
+    $src = (string) file_get_contents(dirname(__DIR__) . '/app/lib/Shard.php');
+    assertTrue(str_contains($src, 'shard_registry'), 'Shard does not read shard_registry');
+    return 'reads shard_registry';
+});
+
+// -----------------------------------------------------------------
 echo "\nShopify OAuth\n";
 
 /** Build a callback query string signed the way Shopify signs one. */

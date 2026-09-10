@@ -151,6 +151,31 @@ return [
         'processed_retain_days' => 30,          // replay window
     ],
 
+    // -----------------------------------------------------------------
+    // Retention after a merchant uninstalls.
+    //
+    // On the App Store, merchants install, trial for days, and uninstall.
+    // Keeping their raw events indefinitely is storage nobody is paying for
+    // and personal data held with no relationship to justify it.
+    //
+    // shop/redact is mandatory and must be honoured within 30 days, so the
+    // deletion machinery is required regardless of what these say. These only
+    // control the delay, and can change at any time without a migration.
+    //
+    //   uninstall_purge_days  days after uninstall before raw events are
+    //                         deleted. 0 purges immediately.
+    //   keep_rollups          rollups are anonymous counts, so retaining them
+    //                         is defensible and near-free — and lets a
+    //                         returning merchant see their old trend lines.
+    //
+    // A shop/redact request overrides both and deletes at once.
+    // -----------------------------------------------------------------
+    'retention' => [
+        'uninstall_purge_days' => Env::int('UNINSTALL_PURGE_DAYS', 0),
+        'keep_rollups'         => Env::bool('KEEP_ROLLUPS_AFTER_UNINSTALL', true),
+        'redact_within_days'   => 30,   // Shopify's requirement; not ours to change
+    ],
+
     'alerts' => [
         'email_to'           => Env::get('ALERT_EMAIL_TO'),
         'email_from'         => Env::get('ALERT_EMAIL_FROM', 'odysseus@digifyce.com'),

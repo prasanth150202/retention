@@ -36,3 +36,15 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# ---------------------------------------------------------------------
+# Shopify CLI project. The TOML and extension source are tracked; the
+# toolchain is not. Node exists on a developer's laptop to run
+# `shopify app deploy` and nowhere else — nothing here is deployed to the
+# PHP server.
+# ---------------------------------------------------------------------
+shopify/node_modules/
+shopify/.shopify/
+shopify/dist/
+shopify/**/node_modules/
+shopify/**/dist/

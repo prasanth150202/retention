@@ -1,0 +1,110 @@
+# =====================================================================
+# retention-dashboard — Shopify app configuration
+#
+# This directory is NOT an application. There is no web/, no Node runtime,
+# no Prisma. The app itself is the PHP project in the parent directory,
+# running on retention.digifyce.com.
+#
+# Shopify CLI is used here as a DEPLOYMENT TOOL only: it pushes this config
+# and the web pixel extension to Shopify. Node lives on a developer's laptop
+# to run `shopify app deploy` and nowhere else.
+#
+#   shopify app deploy      push config + extensions
+#   shopify app config link relink to the Partner Dashboard app
+#
+# Full reasoning: ../docs/PUBLIC_APP_PLAN.md section 10.
+# =====================================================================
+
+name = "retention-dashboard"
+handle = "retention-dashboard"
+
+# Filled by `shopify app config link`. Left blank so a copy of this file
+# cannot silently deploy over somebody else's app.
+client_id = ""
+
+application_url = "https://retention.digifyce.com/"
+
+
+# ---------------------------------------------------------------------
+# NOT embedded.
+#
+# The dashboard renders on our own domain rather than inside the admin
+# iframe: it is a full analytics surface, not an admin panel, and there is
+# no App Bridge involved.
+#
+# Consequence worth knowing: non-embedded apps authenticate through the
+# authorization code grant, not token exchange. Token exchange needs an App
+# Bridge session token, which does not exist here.
+# ---------------------------------------------------------------------
+embedded = false
+
+
+# ---------------------------------------------------------------------
+# Access scopes
+#
+# Requested by Shopify at install time (managed installation), so the app
+# never builds an authorize URL. Merchants see this list on the consent
+# screen — every entry has to be defensible, which is why there are ten and
+# not the seventy-five an earlier iteration of this project asked for.
+#
+#   read_all_orders        order history beyond 60 days. Every retention,
+#                          cohort and lifetime-value figure depends on it.
+#                          Requires a reviewed access request in the Partner
+#                          Dashboard; without it the API silently returns 60
+#                          days and every cohort chart comes out empty.
+#   read_orders            orders, totals, line items
+#   read_customers         first / second / third purchase logic. Protected
+#                          customer data — email and phone only, both stored
+#                          as irreversible salted hashes.
+#   read_products          product titles for the products report
+#   read_checkouts         abandoned checkouts and the value in them
+#   read_inventory         separates "not selling" from "was out of stock"
+#   read_price_rules       discount code attribution
+#   read_locales           store currency and timezone
+#   write_pixels           create the web pixel on install
+#   read_customer_events   receive the events it emits
+# ---------------------------------------------------------------------
+[access_scopes]
+scopes = "read_all_orders,read_orders,read_customers,read_products,read_checkouts,read_inventory,read_price_rules,read_locales,write_pixels,read_customer_events"
+
+
+[auth]
+redirect_urls = [ "https://retention.digifyce.com/oauth/callback.php" ]
+
+
+# ---------------------------------------------------------------------
+# Webhooks
+#
+# Declared here rather than registered through the API — Shopify wires them
+# up on deploy, so the only work is writing the handler.
+#
+# The three compliance topics are mandatory for App Store distribution.
+# customers/data_request and customers/redact must be answered within 30
+# days; shop/redact deletes everything for a store that uninstalled.
+# ---------------------------------------------------------------------
+[webhooks]
+api_version = "2025-07"
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/app.php"
+  topics = [ "app/uninstalled" ]
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/app.php"
+  topics = [ "app/scopes_update" ]
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/compliance.php"
+  compliance_topics = [ "customers/data_request", "customers/redact", "shop/redact" ]
+
+
+[build]
+include_config_on_deploy = true
+
+# MUST stay false.
+#
+# When true, `shopify app dev` rewrites application_url to a developer's
+# temporary tunnel — on the production app, for every merchant. The default
+# in the scaffold is true, which is fine for a template nobody has installed
+# and dangerous for an app that is live.
+automatically_update_urls_on_dev = false
