@@ -9,7 +9,7 @@ in hPanel; no shell access is required.
 
 ## 1. Scheduled jobs
 
-Three cron entries. Without them the site still accepts data but nothing is
+Four cron entries. Without them the site still accepts data but nothing is
 ever processed — events pile up in a spool directory and the dashboard stays
 empty.
 
@@ -33,9 +33,9 @@ sends you:
 /usr/bin/php -v
 ```
 
-### The three jobs
+### The four jobs
 
-Replace `<account>` and `<site>` with the real values. All three take an
+Replace `<account>` and `<site>` with the real values. All four take an
 absolute path — cron does not run from the site directory.
 
 | Schedule | Command | Purpose |
@@ -43,6 +43,7 @@ absolute path — cron does not run from the site directory.
 | `*/5 * * * *` | `/usr/bin/php /home/<account>/domains/<site>/public_html/app/cron/import.php` | Move captured events into the database |
 | `0 * * * *` | `/usr/bin/php /home/<account>/domains/<site>/public_html/app/cron/sync.php` | Pull orders and customers from Shopify |
 | `15 * * * *` | `/usr/bin/php /home/<account>/domains/<site>/public_html/app/cron/health_check.php --quiet` | Watch for silent failures and email alerts |
+| `30 3 * * *` | `/usr/bin/php /home/<account>/domains/<site>/public_html/app/cron/purge.php` | Delete data for stores that uninstalled, once their retention period has passed |
 
 **If your plan's minimum interval is 15 minutes**, change the first to
 `*/15 * * * *`. The only consequence is that dashboard data lags by up to
@@ -59,6 +60,11 @@ accumulate on disk indefinitely; they are safe, but invisible.
 **`sync.php`** — pulls order and customer records from Shopify. Revenue and
 retention figures come from here, not from the browser. Safe to run when no
 store is connected; it exits immediately.
+
+**`purge.php`** — deletes data for stores that uninstalled, once the retention
+period configured in `.env` has passed. Shopify's `shop/redact` webhook covers
+the case where Shopify asks; this covers the case where nobody asks and the
+data should go anyway. Both run the same deletion code, so they cannot drift.
 
 **`health_check.php`** — **do not skip this one.** It is the only thing
 watching for the failures that produce no error anywhere:
@@ -89,7 +95,7 @@ ORDER BY started_at DESC
 LIMIT 20;
 ```
 
-Expect `import` roughly every 5 minutes and `health_check` hourly, both with
+Expect `import` roughly every 5 minutes, `health_check` hourly and `purge` daily, all with
 status `ok`. `sync` appears once a store has been connected to Shopify.
 
 If a job never appears, the usual causes are the wrong PHP binary path, a typo

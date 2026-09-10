@@ -122,6 +122,7 @@ a longer one is data freshness.
 */5 * * * *   /usr/bin/php /home/<account>/domains/<site>/public_html/app/cron/import.php
 0  * * * *    /usr/bin/php /home/<account>/domains/<site>/public_html/app/cron/sync.php
 15 * * * *    /usr/bin/php /home/<account>/domains/<site>/public_html/app/cron/health_check.php --quiet
+30 3 * * *    /usr/bin/php /home/<account>/domains/<site>/public_html/app/cron/purge.php
 ```
 
 `health_check` is not optional. When an event shard fills, MySQL refuses writes and the spool

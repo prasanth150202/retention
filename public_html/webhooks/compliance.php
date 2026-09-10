@@ -76,58 +76,13 @@ switch ($hook['topic']) {
         $deleted = 0;
 
         if ($tid !== null) {
-            $pdo    = Db::core();
-            $hashes = [];
-
-            if (is_string($email)) {
-                $n = Hash::normaliseEmail($email);
-                if ($n !== null) { $hashes[] = Hash::pii($tid, $n); }
-            }
-            if (is_string($phone)) {
-                $n = Hash::normalisePhone($phone);
-                if ($n !== null) { $hashes[] = Hash::pii($tid, $n); }
-            }
-
-            // Resolve to a person, then remove the identity keys that make
-            // them recognisable. Orders themselves are the merchant's
-            // commercial records, not ours to delete — but the link from an
-            // order back to a person is.
-            $personIds = [];
-
-            foreach ($hashes as $h) {
-                $s = $pdo->prepare(
-                    'SELECT person_id FROM identity_keys WHERE tenant_id = ? AND key_hash = ?'
-                );
-                $s->execute([$tid, $h]);
-                foreach ($s->fetchAll() as $r) {
-                    $personIds[(int) $r['person_id']] = true;
-                }
-
-                $d = $pdo->prepare('DELETE FROM identity_keys WHERE tenant_id = ? AND key_hash = ?');
-                $d->execute([$tid, $h]);
-                $deleted += $d->rowCount();
-            }
-
-            if ($customerId !== null) {
-                $d = $pdo->prepare(
-                    'DELETE FROM customers WHERE tenant_id = ? AND shopify_customer_id = ?'
-                );
-                $d->execute([$tid, (int) $customerId]);
-                $deleted += $d->rowCount();
-
-                $d = $pdo->prepare(
-                    'UPDATE orders SET shopify_customer_id = NULL, person_id = NULL
-                      WHERE tenant_id = ? AND shopify_customer_id = ?'
-                );
-                $d->execute([$tid, (int) $customerId]);
-                $deleted += $d->rowCount();
-            }
-
-            foreach (array_keys($personIds) as $pid) {
-                $d = $pdo->prepare('DELETE FROM persons WHERE tenant_id = ? AND person_id = ?');
-                $d->execute([$tid, $pid]);
-                $deleted += $d->rowCount();
-            }
+            $r = Purge::customer(
+                $tid,
+                $customerId !== null ? (int) $customerId : null,
+                is_string($email) ? $email : null,
+                is_string($phone) ? $phone : null
+            );
+            $deleted = $r['deleted'];
         }
 
         Webhook::completeCompliance($id, $deleted,
@@ -140,99 +95,37 @@ switch ($hook['topic']) {
     case 'shop/redact':
         // Sent 48 hours after uninstall. Delete everything for this store.
         //
-        // This overrides the configured retention delay — a redaction request
-        // is not a preference.
+        // Purge::store does the work, and is the same code the retention cron
+        // runs. Two implementations would drift, and the way that drift shows
+        // up is data quietly surviving a redaction.
+        //
+        // includeRollups: true overrides the configured policy. Rollups are
+        // anonymous counts and are normally kept, but a redaction request is
+        // explicit and not a preference.
         $id      = Webhook::logCompliance($hook['topic'], $shop, $hook['raw'], $tid, null);
         $deleted = 0;
+        $note    = 'Store not known to this app; nothing to delete.';
 
         if ($tid !== null) {
-            $pdo = Db::core();
+            $r       = Purge::store($tid, true);
+            $deleted = $r['events'] + $r['core'] + $r['files'];
 
-            // Raw events first: they are the bulk, and they live in another
-            // database reached through the shard router.
-            foreach (Shard::all(true) as $shard) {
-                try {
-                    $year = (int) substr((string) $shard['date_from'], 0, 4);
-                    [, $u, $p] = Db::shardTarget($year);
-                    $ev = Db::connect((string) $shard['physical_name'], $u, $p);
+            $note = sprintf(
+                'Deleted %d event(s), %d core row(s), %d file(s). Tenant row retained as a '
+                . 'tombstone recording the redaction; per-tenant hashing salt destroyed, so '
+                . 'nothing remaining can be linked back to a person.',
+                $r['events'], $r['core'], $r['files']
+            );
 
-                    $s = $ev->prepare('DELETE FROM events WHERE tenant_id = ?');
-                    $s->execute([$tid]);
-                    $deleted += $s->rowCount();
-                } catch (Throwable) {
-                    // An unreachable shard must not abort the rest of the
-                    // deletion; what remains is reported rather than silently
-                    // assumed gone.
-                }
-            }
-
-            $tables = [
-                'order_line_items', 'order_attribution', 'order_journey_moments',
-                'abandoned_checkout_items', 'abandoned_checkouts', 'orders',
-                'identity_keys', 'person_merges', 'persons', 'customers',
-                'products', 'product_variants',
-                'dim_visitor', 'dim_path', 'dim_referrer', 'dim_campaign',
-                'dim_useragent', 'dim_search_term', 'dim_click_target',
-                'import_log', 'sync_cursors', 'channel_rules',
-            ];
-
-            // Rollups are anonymous counts. Whether they survive is a policy
-            // choice, and it is configurable — but a shop/redact request is
-            // explicit, so the default is to take them too.
-            if (!Config::get('retention.keep_rollups', true)) {
-                $tables = array_merge($tables, [
-                    'rollup_daily_kpi', 'rollup_daily_funnel', 'rollup_daily_campaign',
-                    'rollup_daily_channel', 'rollup_daily_landing', 'rollup_daily_product',
-                    'rollup_daily_geo', 'rollup_daily_device', 'rollup_daily_abandon',
-                    'rollup_cohort_repeat', 'rollup_campaign_cohort', 'rollup_person_orders',
-                ]);
-            }
-
-            foreach ($tables as $t) {
-                try {
-                    $s = $pdo->prepare("DELETE FROM {$t} WHERE tenant_id = ?");
-                    $s->execute([$tid]);
-                    $deleted += $s->rowCount();
-                } catch (Throwable) {
-                    // Table may not exist in an older deployment.
-                }
-            }
-
-            // Any spool files not yet imported are data too.
-            $spool = Config::get('paths.spool') . '/' . $tid;
-            foreach (glob($spool . '/*.ndjson') ?: [] as $f) {
-                @unlink($f);
-                $deleted++;
-            }
-            $processed = Config::get('paths.processed') . '/' . $tid;
-            foreach (glob($processed . '/*.ndjson') ?: [] as $f) {
-                @unlink($f);
-                $deleted++;
-            }
-
-            // Keep the tenant row as a tombstone: it records that a redaction
-            // happened and when, which is the evidence the obligation was met.
-            $pdo->prepare(
-                "UPDATE tenants
-                    SET status = 'uninstalled', purged_at = UTC_TIMESTAMP(),
-                        admin_token_enc = NULL, refresh_token_enc = NULL,
-                        token_expires_at = NULL, refresh_expires_at = NULL,
-                        custom_domain = NULL
-                  WHERE tenant_id = ?"
-            )->execute([$tid]);
-
-            // The per-tenant salt goes too. Without it the remaining hashes
-            // cannot be recomputed from any plaintext, which is the point.
-            $salt = Config::get('secrets.salt_dir') . '/tenant_' . $tid . '.salt';
-            if (is_file($salt)) {
-                @unlink($salt);
+            if ($r['shards_failed'] !== []) {
+                // Reported rather than assumed gone, so it can be retried.
+                $note .= ' UNREACHABLE at the time of deletion: '
+                       . implode(', ', $r['shards_failed'])
+                       . ' — these must be purged manually.';
             }
         }
 
-        Webhook::completeCompliance($id, $deleted,
-            'Store data deleted. Tenant row retained as a tombstone recording the '
-            . 'redaction; per-tenant hashing salt destroyed.');
-
+        Webhook::completeCompliance($id, $deleted, $note);
         Webhook::ok('shop redacted');
 
     // -----------------------------------------------------------------

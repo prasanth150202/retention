@@ -29,6 +29,7 @@ require_once __DIR__ . '/Job.php';
 require_once __DIR__ . '/Tenant.php';
 require_once __DIR__ . '/Webhook.php';
 require_once __DIR__ . '/Merchant.php';
+require_once __DIR__ . '/Purge.php';
 require_once __DIR__ . '/ShopifyOAuth.php';
 require_once __DIR__ . '/ShopifyApi.php';
 require_once __DIR__ . '/Dim.php';
