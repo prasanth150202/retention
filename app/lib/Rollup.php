@@ -152,8 +152,7 @@ final class Rollup
                 COUNT(DISTINCT o.person_id)                               AS purchasers,
                 COALESCE(SUM(o.total_minor), 0)                           AS revenue_minor,
                 COALESCE(SUM(o.refunded_minor), 0)                        AS refunded_minor,
-                COUNT(DISTINCT CASE WHEN o.order_sequence = 1 THEN o.person_id END) AS new_customers,
-                COUNT(DISTINCT CASE WHEN o.order_sequence > 1 THEN o.person_id END) AS repeat_customers
+                COUNT(DISTINCT CASE WHEN o.order_sequence = 1 THEN o.person_id END) AS new_customers
                FROM orders o
               WHERE o.tenant_id = :tenant_id
                 AND o.created_at >= :from AND o.created_at < :to
@@ -161,6 +160,22 @@ final class Rollup
         );
         $stmt->execute([':tenant_id' => $t, ':from' => $from, ':to' => $to]);
         $or = $stmt->fetch() ?: [];
+
+        // Returning customers are DERIVED, never counted separately.
+        //
+        // Counting them as "people with order_sequence > 1 today" double counts
+        // anyone who bought twice in one day: their first-ever order and their
+        // second both fall on this date, so they appear as new AND returning.
+        // The two then sum to more than the number of people who actually
+        // bought, and any repeat rate dividing by that sum comes out too low.
+        //
+        // A person is new on the day they became a customer, and returning on
+        // any later day they buy. Never both — "were they a customer before
+        // today" has exactly one answer.
+        $or['repeat_customers'] = max(
+            0,
+            (int) ($or['purchasers'] ?? 0) - (int) ($or['new_customers'] ?? 0)
+        );
 
         // Units are a separate statement rather than a subquery because PDO
         // runs with native prepares here, and those cannot bind the same
@@ -333,8 +348,8 @@ final class Rollup
                     COALESCE(a.campaign_id, 0) AS campaign_id,
                     COUNT(*)                        AS orders,
                     COALESCE(SUM(o.total_minor), 0) AS revenue_minor,
-                    COUNT(DISTINCT CASE WHEN o.order_sequence = 1 THEN o.person_id END) AS new_customers,
-                    COUNT(DISTINCT CASE WHEN o.order_sequence > 1 THEN o.person_id END) AS returning_customers
+                    COUNT(DISTINCT o.person_id)                                         AS buyers,
+                    COUNT(DISTINCT CASE WHEN o.order_sequence = 1 THEN o.person_id END) AS new_customers
                FROM orders o
                JOIN order_attribution a
                  ON a.tenant_id = o.tenant_id AND a.order_id = o.order_id
@@ -347,6 +362,11 @@ final class Rollup
 
         $orders = [];
         foreach ($stmt->fetchAll() as $r) {
+            // Same partition as the daily KPI above, for the same reason.
+            $r['returning_customers'] = max(
+                0,
+                (int) $r['buyers'] - (int) $r['new_customers']
+            );
             $orders[$r['model']][(int) $r['campaign_id']] = $r;
         }
 

@@ -1261,6 +1261,7 @@ if ($envFile !== null) {
         'repeat cohorts land in the right bucket',
         'recomputing a day changes nothing',
         'days close after the reclose window',
+        'new and returning customers partition',
         'every dashboard tab renders',
         'a brand new store is told which it is',
     ] as $label) {
@@ -1584,6 +1585,81 @@ if ($envFile !== null) {
         assertTrue((int) $s->fetchColumn() === 1, 'today was written as final');
 
         return 'today provisional, day 5 closed';
+    });
+
+    check('new and returning customers partition', function () use ($ruPdo) {
+        // A shopper who buys twice in one day used to be counted as BOTH a new
+        // and a returning customer: their first-ever order and their second
+        // both fall on that date. The two tiles then summed to more people than
+        // actually bought, and the repeat rate — which divides by that sum —
+        // came out too low. On a two-buyer day it read 33% when the truth was
+        // that both were brand new.
+        $shop = 'selftest-partition.myshopify.com';
+        $ruPdo->prepare('DELETE FROM tenants WHERE shop_domain = ?')->execute([$shop]);
+
+        $t = Tenant::upsert($shop, [
+            'access_token'             => 'selftest',
+            'refresh_token'            => 'selftest',
+            'expires_in'               => 3600,
+            'refresh_token_expires_in' => 7776000,
+        ], 'read_orders');
+        $ruPdo->prepare('UPDATE tenants SET iana_timezone = ? WHERE tenant_id = ?')
+            ->execute(['Asia/Kolkata', $t]);
+        Tenant::forgetCache();
+
+        $tz  = new DateTimeZone('Asia/Kolkata');
+        $utc = new DateTimeZone('UTC');
+        $day = (new DateTimeImmutable('now', $tz))->modify('-10 days')->format('Y-m-d');
+        $at  = static fn(string $s): string =>
+            (new DateTimeImmutable($s, $tz))->setTimezone($utc)->format('Y-m-d H:i:s');
+
+        // No person_id: identity assigns it, exactly as in production.
+        $order = static function (int $id, string $phone, string $time, int $amount) use ($ruPdo, $t, $at, $day): void {
+            $ruPdo->prepare(
+                "INSERT INTO orders (tenant_id, order_id, phone_hash, created_at,
+                                     currency, total_minor, synced_at)
+                 VALUES (?, ?, ?, ?, 'INR', ?, UTC_TIMESTAMP())"
+            )->execute([
+                $t, $id, Hash::pii($t, (string) Hash::normalisePhone($phone)),
+                $at("{$day} {$time}"), $amount,
+            ]);
+        };
+
+        try {
+            // One shopper, two orders, same day. Plus a second shopper.
+            $order(770001, '9876500001', '10:00:00', 100000);
+            $order(770002, '9876500001', '18:00:00', 200000);
+            $order(770003, '9876500002', '12:00:00', 50000);
+
+            foreach (Identity::unresolved($t, 100) as $o) {
+                Identity::resolveOrder($t, $o);
+            }
+            foreach (Identity::pendingResequence($t, 100) as $p) {
+                Identity::resequence($t, $p);
+            }
+            Rollup::day($t, $day);
+
+            $stmt = $ruPdo->prepare(
+                'SELECT orders, purchasers, new_customers, repeat_customers
+                   FROM rollup_daily_kpi WHERE tenant_id = ? AND stat_date = ?'
+            );
+            $stmt->execute([$t, $day]);
+            $k = $stmt->fetch() ?: [];
+
+            assertTrue((int) $k['orders'] === 3, 'orders: ' . ($k['orders'] ?? 'none'));
+            assertTrue((int) $k['purchasers'] === 2, 'purchasers: ' . ($k['purchasers'] ?? 'none'));
+            assertTrue(
+                (int) $k['new_customers'] + (int) $k['repeat_customers'] === (int) $k['purchasers'],
+                "new {$k['new_customers']} + returning {$k['repeat_customers']} != purchasers {$k['purchasers']}"
+            );
+            // Both became customers that day, so neither is returning yet.
+            assertTrue((int) $k['new_customers'] === 2, 'new: ' . $k['new_customers']);
+            assertTrue((int) $k['repeat_customers'] === 0, 'returning: ' . $k['repeat_customers']);
+
+            return '3 orders, 2 buyers, 2 new + 0 returning';
+        } finally {
+            $ruPdo->prepare('DELETE FROM tenants WHERE shop_domain = ?')->execute([$shop]);
+        }
     });
 
     check('every dashboard tab renders', function () use ($ruT, $ruPdo) {
