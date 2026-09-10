@@ -2131,6 +2131,50 @@ check('Shopify API version is current', function () {
 
     return "{$configured}, stable for another " . number_format($days) . ' days';
 });
+check('every connection is strict', function () {
+    // Without strict mode MySQL does not reject a value that will not fit — it
+    // coerces it silently. An order total above the column maximum is clamped,
+    // an over-long string is truncated, an impossible date becomes zeroes, and
+    // nothing anywhere reports it. Every figure downstream is then confidently
+    // wrong, which is the worst thing this application can do.
+    //
+    // The production server runs WITHOUT strict mode by default, so it is set
+    // per connection rather than assumed from the server config. This checks
+    // the setting actually took, on whichever environment is being tested.
+    $targets = ['core' => Db::core()];
+
+    try {
+        $targets['shard'] = Shard::connectionForDate(gmdate('Y-m-d'));
+    } catch (Throwable) {
+        // No shard reachable; the core check still stands.
+    }
+
+    $seen = [];
+    foreach ($targets as $name => $pdo) {
+        $mode = (string) $pdo->query('SELECT @@SESSION.sql_mode')->fetchColumn();
+
+        assertTrue(
+            str_contains($mode, 'STRICT_TRANS_TABLES') || str_contains($mode, 'STRICT_ALL_TABLES'),
+            "the {$name} connection is not strict: " . ($mode === '' ? '(empty)' : $mode)
+        );
+
+        // And prove it behaves, rather than trusting the variable: writing a
+        // value too large for the column must raise, not truncate.
+        $pdo->exec('CREATE TEMPORARY TABLE IF NOT EXISTS _strict_probe (n TINYINT UNSIGNED NOT NULL)');
+        $threw = false;
+        try {
+            $pdo->exec('INSERT INTO _strict_probe (n) VALUES (999)');
+        } catch (Throwable) {
+            $threw = true;
+        }
+        $pdo->exec('DROP TEMPORARY TABLE IF EXISTS _strict_probe');
+
+        assertTrue($threw, "the {$name} connection silently truncated an out-of-range value");
+        $seen[] = $name;
+    }
+
+    return implode(' + ', $seen) . ' reject out-of-range writes';
+});
 check('shard size measured', function () {
     $m = Shard::measure(Shard::current());
     return sprintf(

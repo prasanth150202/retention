@@ -125,7 +125,24 @@ final class Db
         // UTC everywhere. Per-tenant display timezone is applied at render
         // time, never in storage, so a store changing timezone cannot
         // retroactively move events between days.
-        $pdo->exec("SET time_zone = '+00:00'");
+        //
+        // STRICT MODE IS NOT OPTIONAL AND IS NOT ASSUMED.
+        //
+        // The production server runs without it. Without strict mode MySQL
+        // does not reject a value that will not fit — it coerces it and
+        // carries on: an order total above the column maximum is silently
+        // clamped to that maximum, an over-long string is truncated, an
+        // impossible date becomes zeroes. Every one of those writes a wrong
+        // number with no error anywhere, which is the single worst failure
+        // this application can have, because every figure downstream is then
+        // confidently incorrect.
+        //
+        // Set per connection rather than relied upon from the server config,
+        // so it holds on any host regardless of how that host is tuned.
+        $pdo->exec(
+            "SET SESSION sql_mode = 'STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION',"
+            . " time_zone = '+00:00'"
+        );
 
         return self::$pool[$database] = $pdo;
     }
