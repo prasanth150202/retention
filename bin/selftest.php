@@ -2186,6 +2186,47 @@ check('no SQL binds a placeholder twice', function () {
     return "{$files} files scanned";
 });
 
+check('setup.php refuses without reporting a fault', function () {
+    // Its resting state is refusal: SYSADMIN.md tells the operator to remove
+    // SETUP_TOKEN when setup is finished, so "disabled" is how this URL should
+    // sit in production forever.
+    //
+    // fail() used to set 500 on its first line, overwriting the 403 the token
+    // gate set two lines earlier. Every refusal — including that resting state
+    // — was reported as a server error, which sends whoever reads the logs
+    // hunting a broken application instead of a mistyped token, and buries the
+    // 500s that do mean something.
+    $src = (string) file_get_contents(dirname(__DIR__) . '/public_html/setup.php');
+
+    assertTrue(
+        (bool) preg_match('/function fail\([^)]*int \$status = 500[^)]*\): never/', $src),
+        'fail() no longer takes a status'
+    );
+    assertTrue(
+        str_contains($src, 'http_response_code($status);'),
+        'fail() hardcodes a status again, so its callers cannot choose one'
+    );
+
+    // The two refusals must ask for 403. Checked by reading what is passed,
+    // because the bug was a correct call site being silently overruled.
+    assertTrue(
+        (bool) preg_match("/fail\(\s*'Forbidden',[^;]*403\s*\)/s", $src),
+        'the token gate no longer answers 403'
+    );
+    assertTrue(
+        (bool) preg_match("/fail\(\s*'Setup is disabled',.*?403\s*\)/s", $src),
+        'the disabled state no longer answers 403'
+    );
+
+    // And a genuine fault still is one: this call passes no status, so it
+    // takes the 500 default.
+    assertTrue(
+        str_contains($src, "fail('Configuration error', '<pre>' . htmlspecialchars(\$e->getMessage()) . '</pre>');"),
+        'a configuration error stopped being a server fault'
+    );
+
+    return 'refusals 403, faults 500';
+});
 // -----------------------------------------------------------------
 // Rollups
 //

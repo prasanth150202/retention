@@ -38,9 +38,17 @@ function deployedAt(): string
     return $t ? gmdate('Y-m-d H:i:s', $t) . ' UTC' : 'unknown';
 }
 
-function fail(string $title, string $body): never
+/**
+ * Stop, and say why.
+ *
+ * The status is a parameter because these are not all the same kind of stop.
+ * Refusing a request is not a server fault, and reporting one as the other
+ * sends whoever is reading the logs looking for a broken application instead
+ * of a mistyped token — while burying the 500s that do mean something.
+ */
+function fail(string $title, string $body, int $status = 500): never
 {
-    http_response_code(500);
+    http_response_code($status);
     echo '<!doctype html><meta charset="utf-8"><title>Odysseus setup</title>';
     echo '<style>body{font:15px/1.6 system-ui,sans-serif;max-width:760px;margin:60px auto;padding:0 24px;color:#111}'
        . 'h1{font-size:20px}code{background:#f4f4f5;padding:2px 6px;border-radius:4px}'
@@ -75,14 +83,18 @@ try {
 $expected = (string) Env::get('SETUP_TOKEN', '');
 
 if ($expected === '') {
-    fail('Setup is disabled', <<<HTML
+    fail(
+        'Setup is disabled',
+        <<<HTML
         <p>This page does nothing unless <code>SETUP_TOKEN</code> is set in
         <code>.env</code>. That is the intended resting state.</p>
         <p>To run setup, add a long random value to <code>.env</code>:</p>
         <pre>SETUP_TOKEN=<?= '' ?>choose-a-long-random-string</pre>
         <p>then open <code>/setup.php?token=that-value</code>. Remove the line
         again when you are finished.</p>
-    HTML);
+    HTML,
+        403
+    );
 }
 
 if (strlen($expected) < 16) {
@@ -97,8 +109,7 @@ $supplied = (string) ($_REQUEST['token'] ?? '');
 if (!hash_equals($expected, $supplied)) {
     // Slow down guessing a little without holding a worker for long.
     usleep(400_000);
-    http_response_code(403);
-    fail('Forbidden', '<p>Missing or incorrect setup token.</p>');
+    fail('Forbidden', '<p>Missing or incorrect setup token.</p>', 403);
 }
 
 $action  = (string) ($_POST['action'] ?? '');
