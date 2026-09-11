@@ -38,9 +38,28 @@ function page(string $title, string $body, int $status = 200): never
 }
 
 // The merchant declined, or Shopify refused. Not our failure.
+//
+// This branch answers before anything is verified — it has to, since a
+// cancelled install carries no code to verify — so the error code is a string
+// from whoever made the request, not necessarily from Shopify. It is escaped,
+// so there is no injection here. But quoting it back under "Shopify reported"
+// would let anyone put their own sentence on our domain, attributed to
+// Shopify, on the page merchants are told to expect during install. That is a
+// phishing surface rather than a bug, and it costs one array to close.
+//
+// RFC 6749 §4.1.2.1 defines the whole set an authorization server may send.
 if (isset($_GET['error'])) {
+    $known = [
+        'access_denied', 'invalid_request', 'unauthorized_client',
+        'unsupported_response_type', 'invalid_scope', 'server_error',
+        'temporarily_unavailable',
+    ];
+    $code = (string) $_GET['error'];
+
     page('Installation cancelled',
-        '<p>Shopify reported: <code>' . htmlspecialchars((string) $_GET['error']) . '</code></p>'
+        (in_array($code, $known, true)
+            ? '<p>Shopify reported: <code>' . htmlspecialchars($code) . '</code></p>'
+            : '<p>The installation did not complete.</p>')
         . '<p>Nothing was changed and no data was collected.</p>');
 }
 

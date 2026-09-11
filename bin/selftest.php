@@ -2227,7 +2227,45 @@ check('setup.php refuses without reporting a fault', function () {
 
     return 'refusals 403, faults 500';
 });
-// -----------------------------------------------------------------
+
+check('the install page quotes only Shopify back', function () {
+    // The cancelled-install branch answers before anything is verified — it
+    // has to, since a cancelled install carries no code to verify. So the
+    // "error" is a string from whoever made the request, and the page around
+    // it says "Shopify reported".
+    //
+    // Escaping stops injection and always did. What it does not stop is a
+    // stranger putting their own sentence on our domain, attributed to
+    // Shopify, on the one page merchants are told to expect mid-install.
+    // RFC 6749 §4.1.2.1 defines the entire set an authorization server may
+    // send, so anything else did not come from one.
+    $src = (string) file_get_contents(dirname(__DIR__) . '/public_html/oauth/callback.php');
+
+    $start = strpos($src, "isset(\$_GET['error'])");
+    assertTrue($start !== false, 'the cancelled-install branch is gone');
+
+    $branch = substr($src, $start, 1400);
+
+    assertTrue(
+        str_contains($branch, 'access_denied') && str_contains($branch, 'in_array($code, $known, true)'),
+        'the error code is no longer checked against the known set'
+    );
+
+    // Escaping stays as well — belt and braces, since the allow-list is what
+    // would be edited if someone wanted to show a new code.
+    assertTrue(
+        str_contains($branch, 'htmlspecialchars($code)'),
+        'the error code is echoed without escaping'
+    );
+
+    // And the fallback must not echo the input at all.
+    assertTrue(
+        !preg_match("/:\s*'<p>[^']*\.\s*\\\$_GET\['error'\]/", $branch),
+        'the fallback branch echoes the caller\'s text'
+    );
+
+    return 'known codes shown, anything else not echoed';
+});// -----------------------------------------------------------------
 // Rollups
 //
 // The dashboard reads nothing else, so an error here is an error on
