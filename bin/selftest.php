@@ -2265,7 +2265,61 @@ check('the install page quotes only Shopify back', function () {
     );
 
     return 'known codes shown, anything else not echoed';
-});// -----------------------------------------------------------------
+});
+
+check('a merchant page takes its store from the session alone', function () {
+    // The worst bug this product could have is one merchant seeing another's
+    // revenue, and the shape it would take is ordinary: a tenant id read from
+    // the URL "so the page can be linked to", trusted because a session also
+    // happened to exist.
+    //
+    // merchantPage() is the single choke point every analytics tab goes
+    // through. Its store must come from Merchant::tenant() — which reads
+    // $_SESSION and nothing else — and never from the request.
+    //
+    // Asserted against the source because the alternative needs a configured
+    // client secret, and the two end-to-end session checks in this suite are
+    // SKIPPED without one. A blind spot guarded by nothing is how this would
+    // get through.
+    $src = (string) file_get_contents(dirname(__DIR__) . '/public_html/index.php');
+
+    $at = strpos($src, 'function merchantPage(');
+    assertTrue($at !== false, 'merchantPage() is gone; every tab now decides for itself');
+
+    // To the next top-level function, or the end.
+    $next = strpos($src, "\nfunction ", $at + 10);
+    $body = substr($src, $at, ($next === false ? strlen($src) : $next) - $at);
+
+    assertTrue(
+        str_contains($body, 'Merchant::tenant()'),
+        'the store is no longer read from the merchant session'
+    );
+    assertTrue(
+        (bool) preg_match('/\$tenantId\s*=\s*\(int\)\s*\$tenant\[/', $body),
+        'the tenant id is no longer derived from the session store'
+    );
+
+    // Nothing may assign the tenant id from the request. $_POST and $_SERVER
+    // are used legitimately further down for the plan form, so this bans the
+    // assignment rather than the superglobals.
+    assertTrue(
+        !preg_match('/\$tenantId\s*=[^;]*\$_(GET|POST|REQUEST|COOKIE)/', $body),
+        'the tenant id can be set from the request — one merchant could read another'
+    );
+    assertTrue(
+        !preg_match('/\$tenant\s*=[^;]*\$_(GET|POST|REQUEST|COOKIE)/', $body),
+        'the store itself can be chosen from the request'
+    );
+
+    // And the session must still be required before any of it.
+    assertTrue(
+        str_contains($body, 'Merchant::check()'),
+        'merchantPage() no longer requires a session at all'
+    );
+
+    return 'session only, never the URL';
+});
+// -----------------------------------------------------------------
 // Rollups
 //
 // The dashboard reads nothing else, so an error here is an error on
