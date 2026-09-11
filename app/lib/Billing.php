@@ -398,7 +398,15 @@ final class Billing
 
         $tenantId = (int) $tenant['tenant_id'];
         $before   = (string) ($tenant['billing_status'] ?? 'none');
-        $status   = self::STATUS_MAP[strtoupper((string) ($sub['status'] ?? ''))] ?? null;
+        // A webhook body is JSON from the network. A status that arrives as an
+        // array or object would raise "Array to string conversion" on the cast —
+        // harmless to the decision, which falls through to null and changes
+        // nothing, but it fills the error log, and a log full of harmless
+        // warnings is where a real one goes unnoticed.
+        $raw      = $sub['status'] ?? null;
+        $status   = is_scalar($raw)
+            ? (self::STATUS_MAP[strtoupper((string) $raw)] ?? null)
+            : null;
 
         if ($status === null) {
             return $tenantId;
