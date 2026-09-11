@@ -822,6 +822,144 @@ check('uninstall and billing columns exist', function () {
     }
     return 'lifecycle + billing';
 });
+check('a refresh that states nothing keeps the store alive', function () {
+    // RFC 6749 §6 lets a refresh response carry nothing but the new access
+    // token. storeTokens() writes exactly what it is given — correctly, since
+    // on install a missing expiry really does mean a token that never expires
+    // — so something has to turn "absent" back into "unchanged" first.
+    //
+    // Getting this wrong is silent. A null token_expires_at reads as "never
+    // expires", accessToken() stops refreshing the store, and the token dies
+    // for real a day later with nothing retrying or reporting it.
+    $row = [
+        'token_expires_at'   => gmdate('Y-m-d H:i:s', time() + 60),
+        'refresh_expires_at' => gmdate('Y-m-d H:i:s', time() + 5184000),   // 60 days
+    ];
+
+    $out = Tenant::carryForward([
+        'access_token'             => 'shpat_new',
+        'refresh_token'            => 'shprt_same',
+        'expires_in'               => null,
+        'refresh_token_expires_in' => null,
+    ], $row);
+
+    assertTrue($out['expires_in'] !== null, 'the new access token was stored as never expiring');
+    assertTrue($out['expires_in'] > 0, 'the new access token was stored already expired');
+
+    // Not the OLD expiry: the access token is new, and carrying forward a
+    // value that is 60 seconds from expiry would ask for another refresh
+    // immediately, and the one after that, forever.
+    assertTrue($out['expires_in'] > 300, 'the assumed lifetime is inside the refresh margin, so it would loop');
+
+    // The refresh token IS the same one, so its expiry is genuinely unchanged
+    // and should be restated rather than guessed.
+    $days = (int) round($out['refresh_token_expires_in'] / 86400);
+    assertTrue($days === 60, "the refresh token expiry became {$days} days instead of 60");
+
+    // And a response that DOES state them is left alone.
+    $stated = Tenant::carryForward([
+        'access_token'             => 'shpat_new',
+        'refresh_token'            => 'shprt_new',
+        'expires_in'               => 86400,
+        'refresh_token_expires_in' => 7776000,
+    ], $row);
+
+    assertTrue($stated['expires_in'] === 86400, 'a stated lifetime was overwritten');
+    assertTrue($stated['refresh_token_expires_in'] === 7776000, 'a stated refresh lifetime was overwritten');
+
+    return 'absent means unchanged, stated is honoured';
+});
+
+if ($envFile !== null) {
+    skip('a valid token is used without contacting Shopify', 'writes a test store; local runs only');
+    skip('a store unreachable for 90 days is told to reinstall', 'local runs only');
+} else {
+    $tokShop = 'selftest-token.myshopify.com';
+    $tokPdo  = Db::core();
+
+    check('a valid token is used without contacting Shopify', function () use ($tokPdo, $tokShop) {
+        $tokPdo->prepare('DELETE FROM tenants WHERE shop_domain = ?')->execute([$tokShop]);
+        $t = Tenant::upsert($tokShop, [
+            'access_token'             => 'shpat_valid',
+            'refresh_token'            => 'shprt_valid',
+            'expires_in'               => 86400,
+            'refresh_token_expires_in' => 7776000,
+        ], 'read_orders');
+        Tenant::forgetCache();
+
+        try {
+            // Six hours of life left: handing this straight back is the whole
+            // point. Refreshing a token that works would be a token request on
+            // every cron run, for every store.
+            assertTrue(Tenant::accessToken($t) === 'shpat_valid', 'a good token was not returned');
+
+            // Inside the margin it must reach for Shopify instead. There is no
+            // Shopify here, so the attempt is the evidence: what must NOT
+            // happen is the stale token coming back.
+            $tokPdo->prepare('UPDATE tenants SET token_expires_at = ? WHERE tenant_id = ?')
+                ->execute([gmdate('Y-m-d H:i:s', time() + 120), $t]);
+            Tenant::forgetCache();
+
+            $handedBack = null;
+            try {
+                $handedBack = Tenant::accessToken($t);
+            } catch (Throwable $e) {
+                assertTrue(
+                    !str_contains($e->getMessage(), 'no refresh token'),
+                    'it gave up instead of refreshing: ' . $e->getMessage()
+                );
+            }
+            assertTrue($handedBack === null, 'a token two minutes from expiry was used as-is');
+
+            return 'used while good, refreshed when not';
+        } finally {
+            $tokPdo->prepare('DELETE FROM tenants WHERE shop_domain = ?')->execute([$tokShop]);
+        }
+    });
+
+    check('a store unreachable for 90 days is told to reinstall', function () use ($tokPdo, $tokShop) {
+        // The refresh token expires too. Past that the app cannot recover the
+        // store on its own, and the honest thing is to say so and stop — not
+        // to keep failing against Shopify hourly while the store still reads
+        // as active.
+        $tokPdo->prepare('DELETE FROM tenants WHERE shop_domain = ?')->execute([$tokShop]);
+        $t = Tenant::upsert($tokShop, [
+            'access_token'             => 'shpat_dead',
+            'refresh_token'            => 'shprt_dead',
+            'expires_in'               => 86400,
+            'refresh_token_expires_in' => 7776000,
+        ], 'read_orders');
+
+        try {
+            $tokPdo->prepare(
+                'UPDATE tenants SET token_expires_at = ?, refresh_expires_at = ? WHERE tenant_id = ?'
+            )->execute([
+                gmdate('Y-m-d H:i:s', time() - 3600),
+                gmdate('Y-m-d H:i:s', time() - 86400),
+                $t,
+            ]);
+            Tenant::forgetCache();
+
+            $said = '';
+            try {
+                Tenant::accessToken($t);
+            } catch (Throwable $e) {
+                $said = $e->getMessage();
+            }
+
+            assertTrue(str_contains($said, 'reinstall'), 'the operator was not told what to do: ' . $said);
+
+            $st = $tokPdo->prepare('SELECT status FROM tenants WHERE tenant_id = ?');
+            $st->execute([$t]);
+            assertTrue($st->fetchColumn() === 'paused', 'the store still reads as healthy');
+
+            return 'paused, with the reason';
+        } finally {
+            $tokPdo->prepare('DELETE FROM tenants WHERE shop_domain = ?')->execute([$tokShop]);
+        }
+    });
+}
+
 check('compliance request log exists', function () {
     // Answering a data request within 30 days has to be provable, not just
     // asserted.

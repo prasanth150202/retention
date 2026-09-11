@@ -21,6 +21,14 @@ final class Tenant
     /** Refresh this many seconds before actual expiry, to absorb clock skew. */
     private const REFRESH_MARGIN = 300;
 
+    /**
+     * Assumed lifetime when a refresh response does not state one.
+     *
+     * Short on purpose. Guessing too low costs one extra token call; guessing
+     * "never expires" costs the store. See carryForward().
+     */
+    private const ASSUMED_TOKEN_TTL = 3600;
+
     /** @var array<int,array<string,mixed>> */
     private static array $cache = [];
 
@@ -212,9 +220,63 @@ final class Tenant
             Crypto::decrypt((string) $row['refresh_token_enc'])
         );
 
-        self::storeTokens($tenantId, $tokens);
+        self::storeTokens($tenantId, self::carryForward($tokens, $row));
 
         return $tokens['access_token'];
+    }
+
+    /**
+     * Fill in what a refresh response did not restate.
+     *
+     * RFC 6749 §6 lets a refresh response carry nothing but the new access
+     * token, and ShopifyOAuth::refresh() types both expiries as ?int precisely
+     * because they can be absent. Absent means UNCHANGED, not cleared.
+     *
+     * storeTokens() writes exactly what it is given, and rightly so: on
+     * install, a missing expiry genuinely does mean a token that never
+     * expires. Handing it a half-empty refresh response is therefore silent
+     * and close to unrecoverable.
+     *
+     *   token_expires_at    null reads as "never expires", so accessToken()
+     *                       stops refreshing this store at all. The token dies
+     *                       for real a day later, every API call begins
+     *                       failing, and nothing retries or reports it. Only
+     *                       the merchant reinstalling brings the store back.
+     *
+     *   refresh_expires_at  null disables the 90-day check in refresh(), so a
+     *                       store whose refresh token really has expired is
+     *                       never paused and never told to reinstall. It just
+     *                       fails against Shopify, hourly, forever.
+     *
+     * Separated from the HTTP call so it can be tested, which is the only way
+     * anyone would notice either of those.
+     *
+     * @param  array<string,mixed> $tokens  what Shopify returned
+     * @param  array<string,mixed> $row     the store as it stands
+     * @return array<string,mixed>
+     */
+    public static function carryForward(array $tokens, array $row): array
+    {
+        // The access token is NEW, so the old expiry does not describe it —
+        // carrying that forward would ask for another refresh immediately and
+        // loop. Assume a short life and let the next call re-check.
+        if (($tokens['expires_in'] ?? null) === null) {
+            $tokens['expires_in'] = self::ASSUMED_TOKEN_TTL;
+        }
+
+        // The refresh token, by contrast, is the SAME one — ShopifyOAuth
+        // carries it forward when the response omits it — so its expiry is
+        // genuinely unchanged and can be restated exactly.
+        if (($tokens['refresh_token_expires_in'] ?? null) === null
+            && ($row['refresh_expires_at'] ?? null) !== null
+        ) {
+            $tokens['refresh_token_expires_in'] = max(
+                1,
+                strtotime((string) $row['refresh_expires_at'] . ' UTC') - time()
+            );
+        }
+
+        return $tokens;
     }
 
     /** Mark a store as needing merchant action, without deleting anything. */
