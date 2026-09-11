@@ -49,6 +49,7 @@ try {
         checkSpoolBacklog(),
         checkImportFailures(),
         checkJobFreshness(),
+        checkComplianceBacklog(),
         checkGeoDatabase(),
     );
 
@@ -271,6 +272,56 @@ function checkJobFreshness(): array
     return $out;
 }
 
+/**
+ * A compliance request that was received and never finished.
+ *
+ * These are the mandatory webhooks — a customer asking what is held about
+ * them, a customer asking to be erased, a store asking for everything to go.
+ * The handler records the request before it starts work, so a row with no
+ * completed_at means the work began and stopped: a timeout on a large store,
+ * a dropped connection, a deploy mid-request.
+ *
+ * Shopify retries for 48 hours and then stops asking. Past that, this table is
+ * the only place the obligation still exists, and until now nothing read it.
+ * An unmet legal obligation that nobody is told about is the worst shape a
+ * silent failure can take.
+ */
+function checkComplianceBacklog(): array
+{
+    $stuck = Webhook::outstanding(24);
+
+    if ($stuck === []) {
+        return [];
+    }
+
+    $oldestAge = (time() - strtotime((string) $stuck[0]['received_at'] . ' UTC')) / 3600;
+    $abandoned = $oldestAge > 48;   // Shopify has given up retrying by now
+
+    $topics = array_count_values(array_column($stuck, 'topic'));
+    $what   = [];
+    foreach ($topics as $topic => $n) {
+        $what[] = "{$n} × {$topic}";
+    }
+
+    return [[
+        'key'      => 'compliance_backlog',
+        'severity' => $abandoned ? 'critical' : 'warn',
+        'message'  => sprintf(
+            '%d compliance request(s) received and never completed (%s). Oldest is %.0f hours old, '
+            . 'for %s. %s Re-deliver from the Shopify Partner Dashboard (Apps → Webhooks) or run the '
+            . 'deletion by hand; the request_id values are %s.',
+            count($stuck),
+            implode(', ', $what),
+            $oldestAge,
+            (string) $stuck[0]['shop_domain'],
+            $abandoned
+                ? 'Shopify stops retrying after 48 hours, so these will NOT be re-delivered and the '
+                . 'obligation is now unmet.'
+                : 'Shopify is still retrying, so this may clear on its own.',
+            implode(', ', array_column($stuck, 'request_id'))
+        ),
+    ]];
+}
 /**
  * Geo enrichment is optional, so this is a note rather than an alarm: events
  * still store, just without a location.

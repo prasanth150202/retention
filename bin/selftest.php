@@ -624,6 +624,126 @@ check('webhook scheme differs from OAuth scheme', function () use ($hookBody, $h
 });
 
 // -----------------------------------------------------------------
+// Webhook delivery bookkeeping
+//
+// A verified signature only settles who sent it. What happens after that —
+// whether the work is done, and whether a retry does it again — is the part
+// that decides if a customer is actually erased.
+//
+// These write to compliance_requests, which on a live install is a legal
+// audit log, so they only run locally.
+if ($envFile !== null) {
+    skip('an interrupted deletion is done on the retry', 'writes to the compliance log; local runs only');
+    skip('a finished deletion is not repeated', 'local runs only');
+    skip('an unfinished request is reported to somebody', 'local runs only');
+    skip('a long non-ASCII address can be recorded', 'local runs only');
+} else {
+    $cmpPdo  = Db::core();
+    $cmpShop = 'selftest-compliance.myshopify.com';
+    $cmpPdo->prepare('DELETE FROM compliance_requests WHERE shop_domain = ?')->execute([$cmpShop]);
+
+    $cmpBody = static fn(string $tag): string => json_encode(['shop_domain' => 'x', 'tag' => $tag]);
+
+    check('an interrupted deletion is done on the retry', function () use ($cmpShop, $cmpBody) {
+        // The handler records the request BEFORE it starts deleting. If a row
+        // is treated as proof the work happened, then one timeout — on a large
+        // store, mid-deploy, a dropped connection — converts into a permanent
+        // refusal: Shopify retries, we answer "already handled", and the
+        // customer is never erased. Nothing anywhere notices.
+        $raw = $cmpBody('interrupted');
+
+        Webhook::logCompliance('customers/redact', $cmpShop, $raw, null, '9001');
+
+        assertTrue(
+            !Webhook::completedBefore('customers/redact', $raw),
+            'a request that was logged and never finished counted as done'
+        );
+
+        return 'the retry does the work';
+    });
+
+    check('a finished deletion is not repeated', function () use ($cmpShop, $cmpBody) {
+        // The other half. Shopify can deliver the same webhook twice on
+        // success, and redoing a completed deletion is pointless work on a
+        // path that deletes things.
+        $raw = $cmpBody('finished');
+        $id  = Webhook::logCompliance('customers/redact', $cmpShop, $raw, null, '9002');
+        Webhook::completeCompliance($id, 3, 'done');
+
+        assertTrue(
+            Webhook::completedBefore('customers/redact', $raw),
+            'a completed request would have been run again'
+        );
+
+        // Same topic, different body: a different customer, not a duplicate.
+        assertTrue(
+            !Webhook::completedBefore('customers/redact', $cmpBody('someone-else')),
+            'a different customer was mistaken for a duplicate delivery'
+        );
+
+        return 'deduplicated on the exact delivery';
+    });
+
+    check('an unfinished request is reported to somebody', function () use ($cmpPdo, $cmpShop, $cmpBody) {
+        // Shopify stops retrying after 48 hours. After that this table is the
+        // only place the obligation still exists, so something has to read it.
+        $raw = $cmpBody('stale');
+        $id  = Webhook::logCompliance('shop/redact', $cmpShop, $raw, null, null);
+
+        $cmpPdo->prepare('UPDATE compliance_requests SET received_at = ? WHERE request_id = ?')
+            ->execute([gmdate('Y-m-d H:i:s', time() - 4 * 86400), $id]);
+
+        $ids = array_column(Webhook::outstanding(24), 'request_id');
+        assertTrue(in_array($id, array_map('intval', $ids), true), 'a four-day-old request went unreported');
+
+        // A fresh one is not yet a problem: Shopify is still retrying.
+        $fresh = Webhook::logCompliance('shop/redact', $cmpShop, $cmpBody('fresh'), null, null);
+        $ids   = array_map('intval', array_column(Webhook::outstanding(24), 'request_id'));
+        assertTrue(!in_array($fresh, $ids, true), 'a request from a minute ago was raised as stuck');
+
+        return 'raised after a day, not before';
+    });
+
+    check('a long non-ASCII address can be recorded', function () use ($cmpPdo, $cmpShop, $cmpBody) {
+        // subject_ref is VARCHAR(191) — 191 CHARACTERS. substr() counts BYTES,
+        // so cutting a Devanagari or Japanese address at 191 bytes lands
+        // mid-character, and a strict connection refuses the invalid UTF-8.
+        // The insert is the first thing the handler does, so the whole
+        // mandatory webhook fails and keeps failing until Shopify gives up.
+        $email = str_repeat("\u{0917}", 70) . '@example.com';
+        $raw   = $cmpBody('long-address');
+
+        $id = Webhook::logCompliance('customers/data_request', $cmpShop, $raw, null, Text::fitOrNull($email, 191));
+        assertTrue($id > 0, 'the request could not be recorded at all');
+
+        $stmt = $cmpPdo->prepare('SELECT subject_ref FROM compliance_requests WHERE request_id = ?');
+        $stmt->execute([$id]);
+        $stored = (string) $stmt->fetchColumn();
+
+        assertTrue(mb_check_encoding($stored, 'UTF-8'), 'the stored address is not valid UTF-8');
+        assertTrue(mb_strlen($stored, 'UTF-8') <= 191, 'the stored address is longer than the column');
+
+        // The round trip above proves the column accepts what Text produces.
+        // It does not prove the HANDLER uses it, and the handler is where the
+        // byte-cut was. Assert the entry point itself, because a substr() put
+        // back here fails in production and nowhere else.
+        $src = (string) file_get_contents(dirname(__DIR__) . '/public_html/webhooks/compliance.php');
+        assertTrue(
+            str_contains($src, 'Text::fitOrNull($ref, 191)'),
+            'compliance.php no longer fits the subject reference to the column'
+        );
+        assertTrue(
+            !preg_match('/substr\(\s*\$ref/', $src),
+            'compliance.php truncates the subject reference by bytes again'
+        );
+
+        return mb_strlen($stored, 'UTF-8') . ' characters, and the handler fits it';
+    });
+
+    $cmpPdo->prepare('DELETE FROM compliance_requests WHERE shop_domain = ?')->execute([$cmpShop]);
+}
+
+// -----------------------------------------------------------------
 echo "\nMerchant session\n";
 
 check('no session without app credentials', function () {

@@ -76,22 +76,55 @@ final class Webhook
     }
 
     /**
-     * Has this exact delivery been handled already?
+     * Has this exact delivery been carried out already?
      *
      * Shopify retries on any non-2xx and can deliver more than once even on
      * success, so handlers must be idempotent. Deduplicating on the body
      * digest is what makes that true for handlers that are otherwise not.
+     *
+     * COMPLETED, not merely seen. The request is recorded before the work
+     * starts, so a handler that dies part way through — a timeout on a large
+     * store, a dropped connection, a deploy mid-request — leaves a row behind.
+     * Treating that row as proof the work happened turns one interruption into
+     * a permanent refusal: Shopify retries, we answer 200 "already handled",
+     * and the customer is never actually erased. Only completed_at says the
+     * work finished.
      */
-    public static function seenBefore(string $topic, string $rawBody): bool
+    public static function completedBefore(string $topic, string $rawBody): bool
     {
         $hash = substr(hash('sha256', $rawBody, true), 0, 16);
 
         $stmt = Db::core()->prepare(
-            'SELECT request_id FROM compliance_requests WHERE topic = ? AND payload_hash = ?'
+            'SELECT request_id FROM compliance_requests
+              WHERE topic = ? AND payload_hash = ? AND completed_at IS NOT NULL'
         );
         $stmt->execute([$topic, $hash]);
 
         return $stmt->fetchColumn() !== false;
+    }
+
+    /**
+     * Requests received and never finished.
+     *
+     * The obligation is not only to comply but to be able to SHOW compliance,
+     * so an unfinished request has to be visible to somebody. Shopify stops
+     * retrying after 48 hours; past that, nothing else will ever raise it.
+     *
+     * @return list<array<string,mixed>>
+     */
+    public static function outstanding(int $olderThanHours = 24): array
+    {
+        $stmt = Db::core()->prepare(
+            'SELECT request_id, shop_domain, topic, received_at
+               FROM compliance_requests
+              WHERE completed_at IS NULL
+                AND received_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL ? HOUR)
+              ORDER BY received_at
+              LIMIT 50'
+        );
+        $stmt->execute([$olderThanHours]);
+
+        return $stmt->fetchAll();
     }
 
     /** Record a compliance request so the obligation can be proven, not just asserted. */

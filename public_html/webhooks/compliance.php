@@ -30,8 +30,11 @@ $tenant  = Tenant::findByShop($shop);
 $tid     = $tenant ? (int) $tenant['tenant_id'] : null;
 
 // Shopify retries on any non-2xx and can deliver twice even on success.
-// Deleting is idempotent; re-running a deletion is harmless but pointless.
-if (Webhook::seenBefore($hook['topic'], $hook['raw'])) {
+// Deleting is idempotent; re-running a completed deletion is harmless but
+// pointless. Re-running an INTERRUPTED one is the whole point: the request is
+// logged before the work begins, so "a row exists" is not evidence the work
+// was done.
+if (Webhook::completedBefore($hook['topic'], $hook['raw'])) {
     Webhook::ok('already handled');
 }
 
@@ -49,7 +52,7 @@ switch ($hook['topic']) {
         // We therefore cannot look a person up by email, and say so rather
         // than pretending to a capability we deliberately do not have.
         $ref = (string) ($payload['customer']['email'] ?? $payload['customer']['id'] ?? '');
-        $id  = Webhook::logCompliance($hook['topic'], $shop, $hook['raw'], $tid, $ref !== '' ? substr($ref, 0, 191) : null);
+        $id  = Webhook::logCompliance($hook['topic'], $shop, $hook['raw'], $tid, Text::fitOrNull($ref, 191));
 
         Webhook::completeCompliance($id, 0,
             'Acknowledged. This app stores email and phone only as irreversible salted '
