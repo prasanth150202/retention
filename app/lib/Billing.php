@@ -158,6 +158,41 @@ final class Billing
     }
 
     /**
+     * How many free days this store is entitled to, which is not the same as
+     * how many the plan advertises.
+     *
+     * Shopify does not track trial eligibility for an app. trialDays is
+     * whatever the app asks for on each appSubscriptionCreate, and it will
+     * grant it every time. So a merchant could subscribe, use the trial,
+     * cancel, subscribe again, and never pay — indefinitely.
+     *
+     * trial_ends_at cannot answer this. It is overwritten by each new
+     * subscription and cleared for a plan with no trial, so it says when the
+     * current trial ends, not whether one was ever had. trial_started_at is
+     * written once and never cleared, including across an uninstall and
+     * reinstall — which is the same loop by another route, since the tenant
+     * row deliberately survives so history is kept.
+     *
+     * Separated from subscribe() because subscribe() cannot run without a
+     * Shopify to answer it, and a rule about money should be testable.
+     */
+    public static function trialDaysFor(int $tenantId): int
+    {
+        $configured = (int) Config::get('billing.trial_days', 0);
+
+        if ($configured <= 0) {
+            return 0;
+        }
+
+        $stmt = Db::core()->prepare('SELECT trial_started_at FROM tenants WHERE tenant_id = ?');
+        $stmt->execute([$tenantId]);
+        $had = $stmt->fetchColumn();
+
+        // A store that has had one before gets none. It is still free to
+        // subscribe — it just starts paying at once, like any other renewal.
+        return ($had === null || $had === false) ? $configured : 0;
+    }
+    /**
      * Start a subscription and return where to send the merchant.
      *
      * The merchant must approve the charge on Shopify's own confirmation page
@@ -174,7 +209,7 @@ final class Billing
             throw new InvalidArgumentException("Unknown plan '{$planHandle}'.");
         }
 
-        $trialDays = (int) Config::get('billing.trial_days', 0);
+        $trialDays = self::trialDaysFor($tenantId);
         $test      = (bool) Config::get('billing.test', false);
 
         $result = ShopifyApi::forTenant($tenantId)->query(
@@ -234,11 +269,16 @@ final class Billing
                     trial_ends_at = CASE WHEN ? > 0
                                          THEN DATE_ADD(UTC_TIMESTAMP(), INTERVAL ? DAY)
                                          ELSE NULL END,
+                    -- COALESCE, never overwritten: the first trial is the only
+                    -- one, and this is what remembers it.
+                    trial_started_at = CASE WHEN ? > 0
+                                            THEN COALESCE(trial_started_at, UTC_TIMESTAMP())
+                                            ELSE trial_started_at END,
                     billing_checked_at = UTC_TIMESTAMP()
               WHERE tenant_id = ?"
         )->execute([
             $planHandle, $gid, substr($confirmUrl, 0, 512),
-            $test ? 1 : 0, $trialDays, $trialDays, $tenantId,
+            $test ? 1 : 0, $trialDays, $trialDays, $trialDays, $tenantId,
         ]);
 
         Tenant::forgetCache();
