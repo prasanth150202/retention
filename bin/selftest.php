@@ -2049,6 +2049,52 @@ check('a new store is in the map immediately', function () {
     }
 });
 
+check('uninstalling takes the store out of the map', function () {
+    // The mirror of the check above, and the one that matters more. Installing
+    // late costs a store a few of its own events. Uninstalling late means the
+    // app carries on collecting a merchant's shoppers after they have removed
+    // it — while the webhook has already answered "uninstall recorded" and the
+    // row reads 'uninstalled'.
+    //
+    // The map is rebuilt only by the importer's cron, so the window was however
+    // long until its next run.
+    $shop = 'selftest-uninstall-map.myshopify.com';
+    $pdo  = Db::core();
+    $pdo->prepare('DELETE FROM tenants WHERE shop_domain = ?')->execute([$shop]);
+
+    $t = Tenant::upsert($shop, [
+        'access_token'             => 'selftest',
+        'refresh_token'            => 'selftest',
+        'expires_in'               => 3600,
+        'refresh_token_expires_in' => 7776000,
+    ], 'read_orders');
+
+    try {
+        $key  = (string) (Tenant::find($t)['write_key'] ?? '');
+        $file = Config::get('paths.storage') . '/tenants.php';
+
+        Tenant::refreshWriteKeyCache();
+        $map = include $file;
+        assertTrue(isset($map[$key]), 'the store was not trackable to begin with');
+
+        // Exactly what the webhook does, and nothing else.
+        Tenant::markUninstalled($shop);
+
+        // include() caches by path, so re-including returns the stale array.
+        $map = eval('?>' . file_get_contents($file));
+
+        assertTrue(
+            !isset($map[$key]),
+            'the store is still in the write-key map, so its pixel is still accepted'
+        );
+
+        return 'tracking stops when the merchant says stop';
+    } finally {
+        $pdo->prepare('DELETE FROM tenants WHERE shop_domain = ?')->execute([$shop]);
+        Tenant::refreshWriteKeyCache();
+    }
+});
+
 check('installing refreshes the map', function () {
     // The call itself, in the one place that matters. A refactor that drops it
     // reopens the gap silently, because nothing else fails.

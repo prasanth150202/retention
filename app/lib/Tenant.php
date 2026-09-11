@@ -285,6 +285,10 @@ final class Tenant
         Db::core()->prepare("UPDATE tenants SET status = 'paused' WHERE tenant_id = ?")
             ->execute([$tenantId]);
         unset(self::$cache[$tenantId]);
+
+        // The write-key map holds active stores only, so it is now stale in
+        // the same way an uninstall leaves it stale. See markUninstalled().
+        self::refreshWriteKeyCache();
     }
 
     /**
@@ -316,6 +320,20 @@ final class Tenant
                     refresh_expires_at = NULL
               WHERE tenant_id = ?"
         )->execute([$days, $id]);
+
+        // STOP COLLECTING. The ingest endpoint resolves a write key from a
+        // generated file, not a query, so a store stays trackable until that
+        // file is rebuilt — and only the importer rebuilds it, on its cron.
+        // Without this the app goes on accepting and spooling a merchant's
+        // shoppers for minutes after they uninstalled, while the webhook has
+        // already answered "uninstall recorded" and the row reads
+        // 'uninstalled'.
+        //
+        // Installing already refreshes the map, for the mirror-image reason.
+        // Here rather than in the webhook handler so that no second caller has
+        // to remember.
+        self::forgetCache();
+        self::refreshWriteKeyCache();
 
         // The token is revoked the moment an app is uninstalled, so keeping
         // the ciphertext serves no purpose and is one more thing to leak.
