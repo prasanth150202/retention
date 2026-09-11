@@ -16,11 +16,41 @@ Nothing below can be done from the code side.
 
 | # | What | Why it is blocking |
 |---|---|---|
-| 1 | **Create the app and get its credentials** | Without them nothing installs. Step-by-step in 1.1 below. |
+| 1 | **Put `SHOPIFY_CLIENT_SECRET` in the server's `.env`** | The app itself is created and its `client_id` is in `shopify.app.toml`. The secret is the last piece and it is not there: every webhook on production is being rejected right now. Verified, not assumed — see below. |
 | 2 | **Request `read_all_orders`** | It does **not** transfer from the earlier custom app. Step-by-step and a ready-to-paste justification in 1.2 below. |
 | 3 | **Request protected customer data access** | Needed for `read_customers`. Same page as 1.2. See 1.3. |
 | 4 | **Rotate the credentials pasted into chat** | The database passwords and the old app's `shpss_…` secret. Assume they are compromised. Deferred by decision, not done. |
 | 5 | **Listing copy, icon and screenshots** | Section 5 below lists what is needed. |
+
+**How to see #1 for yourself.** A webhook sent with a body reaches the
+signature check, which needs the secret:
+
+```bash
+curl -i -X POST https://retention.digifyce.com/webhooks/app.php \
+  -H 'Content-Type: application/json' \
+  -H 'X-Shopify-Topic: app/uninstalled' \
+  -H 'X-Shopify-Shop-Domain: probe.myshopify.com' \
+  -H 'X-Shopify-Hmac-Sha256: AAAA' \
+  -d '{"probe":1}'
+```
+
+`500` means the secret is still missing and no webhook can be verified.
+`401` means it is set and the deliberately wrong signature was refused —
+which is the answer you want. The app cannot pass review while it is 500:
+Shopify tests the mandatory compliance webhooks and expects a `401` for a
+bad signature.
+
+The file is the `.env` at the **repository root** — the folder holding
+`README.md`, `app/` and `config/`, *not* `public_html`:
+
+```
+SHOPIFY_CLIENT_ID=f53cb10aa7084449146c730ee5c7d791
+SHOPIFY_CLIENT_SECRET=<Dev Dashboard → Settings → Credentials>
+APP_URL=https://retention.digifyce.com
+SHOPIFY_API_VERSION=2026-07
+```
+
+Nothing needs restarting; the next request picks it up.
 
 Price is settled: **USD 19.00/month**, 14-day trial. Already the default in
 `config/config.php`; no `.env` entry is needed unless it changes. It must match
