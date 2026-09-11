@@ -2365,7 +2365,45 @@ check('a merchant page takes its store from the session alone', function () {
 
     return 'session only, never the URL';
 });
-// -----------------------------------------------------------------
+
+check('starting a charge needs the merchant\'s own form', function () {
+    // The plan POST starts a recurring charge. SameSite=Lax blocks most
+    // cross-site POSTs, but that is a browser behaviour rather than a
+    // guarantee, and the cost of being wrong is a merchant billed for
+    // something they never asked for.
+    //
+    // One line protects it, and removing that line would break nothing
+    // visible — the form would go on working for everybody, including
+    // whoever sent them the link.
+    $src = (string) file_get_contents(dirname(__DIR__) . '/public_html/index.php');
+
+    $at = strpos($src, "if (\$page === 'plan')");
+    assertTrue($at !== false, 'the plan route is gone');
+
+    $block = substr($src, $at, 900);
+
+    assertTrue(
+        str_contains($block, "REQUEST_METHOD'] === 'POST'"),
+        'the plan route no longer distinguishes a POST'
+    );
+    // Anchored to the start of a line, because str_contains() happily matches
+    // the call inside "// Merchant::csrfCheck();" — a guard that passes while
+    // the protection is commented out is worse than no guard at all.
+    assertTrue(
+        (bool) preg_match('/^[ \t]*Merchant::csrfCheck\(\);/m', $block),
+        'a subscription can be started without the merchant\'s own form'
+    );
+
+    // The merchant's own pair, not Auth's. PHP allows one session per request
+    // and the two audiences use different session names, so Auth::csrfCheck()
+    // here would validate against whichever session happened to be open.
+    assertTrue(
+        !str_contains($block, 'Auth::csrfCheck()'),
+        'the staff CSRF pair is being used on a merchant form'
+    );
+
+    return 'checked before the charge';
+});// -----------------------------------------------------------------
 // Rollups
 //
 // The dashboard reads nothing else, so an error here is an error on
